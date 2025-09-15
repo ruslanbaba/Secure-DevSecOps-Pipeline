@@ -1027,6 +1027,14 @@ secure-devsecops-pipeline/
 ├── README.md                         # This comprehensive guide
 ├── FRAMEWORK-DOCUMENTATION.md        # Additional technical documentation
 ├── .env.example                      # Environment template
+├── Dockerfile                        # Production-ready container image
+├── Dockerfile.vulnerable             # Test container with vulnerabilities
+├── .dockerignore                     # Docker build exclusions
+├── package.json                      # Node.js application dependencies
+├── tsconfig.json                     # TypeScript configuration
+├── healthcheck.js                    # Container health check script
+├── src/
+│   └── index.ts                      # Main application source code
 ├── security/
 │   ├── configs/                      # Security tool configurations
 │   │   ├── checkmarx-config.yaml
@@ -1043,6 +1051,8 @@ secure-devsecops-pipeline/
 │   │       └── cis-benchmark.rego
 │   └── compliance/                   # Compliance frameworks
 ├── scripts/
+│   ├── docker-build.sh               # Comprehensive Docker build script
+│   ├── docker-push.sh                # Secure Docker push script
 │   └── security/                     # Security automation scripts
 │       ├── checkmarx-scan.sh
 │       ├── snyk-scan.sh
