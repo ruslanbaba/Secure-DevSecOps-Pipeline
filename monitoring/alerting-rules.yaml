@@ -1,0 +1,333 @@
+---
+# Prometheus Alerting Rules for DevSecOps Pipeline
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-rules
+  namespace: monitoring
+  labels:
+    app: prometheus
+    component: rules
+data:
+  # Application SLI/SLO rules
+  sli-slo.yml: |
+    groups:
+    - name: sli-slo.rules
+      interval: 30s
+      rules:
+      # SLI: Availability (uptime)
+      - record: sli:availability:ratio_rate5m
+        expr: avg_over_time(up{job="secure-app"}[5m])
+      
+      - record: sli:availability:ratio_rate1h  
+        expr: avg_over_time(up{job="secure-app"}[1h])
+      
+      - record: sli:availability:ratio_rate24h
+        expr: avg_over_time(up{job="secure-app"}[24h])
+
+      # SLI: Request success rate
+      - record: sli:request_success:ratio_rate5m
+        expr: |
+          (
+            sum(rate(http_requests_total{job="secure-app",status!~"5.."}[5m]))
+            /
+            sum(rate(http_requests_total{job="secure-app"}[5m]))
+          )
+
+      - record: sli:request_success:ratio_rate1h
+        expr: |
+          (
+            sum(rate(http_requests_total{job="secure-app",status!~"5.."}[1h]))
+            /
+            sum(rate(http_requests_total{job="secure-app"}[1h]))
+          )
+
+      # SLI: Request latency
+      - record: sli:request_latency:p50_5m
+        expr: histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket{job="secure-app"}[5m])) by (le))
+
+      - record: sli:request_latency:p95_5m
+        expr: histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job="secure-app"}[5m])) by (le))
+
+      - record: sli:request_latency:p99_5m
+        expr: histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{job="secure-app"}[5m])) by (le))
+
+  # Security-focused alerts
+  security.yml: |
+    groups:
+    - name: security.rules
+      rules:
+      # High error rate (potential security incident)
+      - alert: HighErrorRate
+        expr: |
+          (
+            sum(rate(http_requests_total{job="secure-app",status=~"5.."}[5m]))
+            /
+            sum(rate(http_requests_total{job="secure-app"}[5m]))
+          ) > 0.05
+        for: 2m
+        labels:
+          severity: critical
+          component: security
+        annotations:
+          summary: "High error rate detected"
+          description: "Error rate is {{ $value | humanizePercentage }} for {{ $labels.instance }}"
+          runbook_url: "https://runbooks.example.com/high-error-rate"
+
+      # Suspicious request patterns
+      - alert: SuspiciousRequestPattern
+        expr: |
+          sum(rate(http_requests_total{job="secure-app",status="403"}[5m])) > 10
+        for: 1m
+        labels:
+          severity: warning
+          component: security
+        annotations:
+          summary: "High number of 403 responses"
+          description: "{{ $value }} 403 responses per second for {{ $labels.instance }}"
+
+      # Authentication failures
+      - alert: HighAuthenticationFailures
+        expr: |
+          sum(rate(authentication_failures_total{job="secure-app"}[5m])) > 5
+        for: 2m
+        labels:
+          severity: critical
+          component: security
+        annotations:
+          summary: "High authentication failure rate"
+          description: "{{ $value }} authentication failures per second"
+
+      # TLS certificate expiration
+      - alert: TLSCertificateExpiring
+        expr: |
+          probe_ssl_earliest_cert_expiry - time() < 86400 * 7
+        for: 0m
+        labels:
+          severity: warning
+          component: security
+        annotations:
+          summary: "TLS certificate expiring soon"
+          description: "TLS certificate expires in {{ $value | humanizeDuration }}"
+
+      # Container vulnerabilities
+      - alert: ContainerVulnerabilities
+        expr: |
+          trivy_vulnerabilities_total{severity="Critical"} > 0
+        for: 0m
+        labels:
+          severity: critical
+          component: security
+        annotations:
+          summary: "Critical vulnerabilities found in container"
+          description: "{{ $value }} critical vulnerabilities in {{ $labels.image }}"
+
+      # Network policy violations
+      - alert: NetworkPolicyViolation
+        expr: |
+          increase(network_policy_violations_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+          component: security
+        annotations:
+          summary: "Network policy violation detected"
+          description: "{{ $value }} network policy violations in the last 5 minutes"
+
+  # Application performance alerts
+  performance.yml: |
+    groups:
+    - name: performance.rules
+      rules:
+      # High latency
+      - alert: HighLatency
+        expr: |
+          histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job="secure-app"}[5m])) by (le)) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          component: performance
+        annotations:
+          summary: "High request latency"
+          description: "95th percentile latency is {{ $value }}s"
+
+      # Memory usage
+      - alert: HighMemoryUsage
+        expr: |
+          (
+            container_memory_working_set_bytes{container="secure-app"}
+            /
+            container_spec_memory_limit_bytes{container="secure-app"}
+          ) > 0.8
+        for: 10m
+        labels:
+          severity: warning
+          component: performance
+        annotations:
+          summary: "High memory usage"
+          description: "Memory usage is {{ $value | humanizePercentage }} for {{ $labels.pod }}"
+
+      # CPU usage
+      - alert: HighCPUUsage
+        expr: |
+          (
+            rate(container_cpu_usage_seconds_total{container="secure-app"}[5m])
+            /
+            container_spec_cpu_quota{container="secure-app"} * container_spec_cpu_period{container="secure-app"}
+          ) > 0.8
+        for: 10m
+        labels:
+          severity: warning
+          component: performance
+        annotations:
+          summary: "High CPU usage"
+          description: "CPU usage is {{ $value | humanizePercentage }} for {{ $labels.pod }}"
+
+      # Disk usage
+      - alert: HighDiskUsage
+        expr: |
+          (
+            1 - (
+              node_filesystem_avail_bytes{mountpoint="/"}
+              /
+              node_filesystem_size_bytes{mountpoint="/"}
+            )
+          ) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          component: performance
+        annotations:
+          summary: "High disk usage"
+          description: "Disk usage is {{ $value | humanizePercentage }} on {{ $labels.instance }}"
+
+  # Infrastructure alerts
+  infrastructure.yml: |
+    groups:
+    - name: infrastructure.rules
+      rules:
+      # Pod crash looping
+      - alert: PodCrashLooping
+        expr: |
+          rate(kube_pod_container_status_restarts_total{pod=~"secure-app-.*"}[15m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+          component: infrastructure
+        annotations:
+          summary: "Pod is crash looping"
+          description: "Pod {{ $labels.pod }} is restarting frequently"
+
+      # Pod not ready
+      - alert: PodNotReady
+        expr: |
+          kube_pod_status_ready{condition="false", pod=~"secure-app-.*"} == 1
+        for: 10m
+        labels:
+          severity: warning
+          component: infrastructure
+        annotations:
+          summary: "Pod not ready"
+          description: "Pod {{ $labels.pod }} has been not ready for more than 10 minutes"
+
+      # Deployment rollout stuck
+      - alert: DeploymentRolloutStuck
+        expr: |
+          kube_deployment_status_replicas_unavailable{deployment="secure-app"} > 0
+        for: 15m
+        labels:
+          severity: critical
+          component: infrastructure
+        annotations:
+          summary: "Deployment rollout stuck"
+          description: "Deployment {{ $labels.deployment }} rollout is stuck"
+
+      # Node not ready
+      - alert: NodeNotReady
+        expr: |
+          kube_node_status_condition{condition="Ready",status="true"} == 0
+        for: 10m
+        labels:
+          severity: critical
+          component: infrastructure
+        annotations:
+          summary: "Node not ready"
+          description: "Node {{ $labels.node }} has been not ready for more than 10 minutes"
+
+      # Persistent volume usage
+      - alert: PersistentVolumeUsageHigh
+        expr: |
+          (
+            kubelet_volume_stats_used_bytes
+            /
+            kubelet_volume_stats_capacity_bytes
+          ) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          component: infrastructure
+        annotations:
+          summary: "Persistent volume usage high"
+          description: "PV usage is {{ $value | humanizePercentage }} for {{ $labels.persistentvolumeclaim }}"
+
+  # Business logic alerts
+  business.yml: |
+    groups:
+    - name: business.rules
+      rules:
+      # SLO violations
+      - alert: SLOViolationAvailability
+        expr: |
+          sli:availability:ratio_rate5m < 0.999
+        for: 2m
+        labels:
+          severity: critical
+          component: slo
+        annotations:
+          summary: "SLO violation: Availability"
+          description: "Availability SLO violated. Current: {{ $value | humanizePercentage }}, Target: 99.9%"
+
+      - alert: SLOViolationLatency
+        expr: |
+          sli:request_latency:p95_5m > 0.5
+        for: 5m
+        labels:
+          severity: critical
+          component: slo
+        annotations:
+          summary: "SLO violation: Latency"
+          description: "Latency SLO violated. P95: {{ $value }}s, Target: <500ms"
+
+      - alert: SLOViolationErrorRate
+        expr: |
+          (1 - sli:request_success:ratio_rate5m) > 0.001
+        for: 2m
+        labels:
+          severity: critical
+          component: slo
+        annotations:
+          summary: "SLO violation: Error rate"
+          description: "Error rate SLO violated. Current: {{ $value | humanizePercentage }}, Target: <0.1%"
+
+      # Business metrics
+      - alert: LowRequestVolume
+        expr: |
+          sum(rate(http_requests_total{job="secure-app"}[5m])) < 1
+        for: 10m
+        labels:
+          severity: warning
+          component: business
+        annotations:
+          summary: "Low request volume"
+          description: "Request volume is {{ $value }} requests/second (expected > 1 req/s)"
+
+      - alert: HighDependencyLatency
+        expr: |
+          histogram_quantile(0.95, sum(rate(http_client_request_duration_seconds_bucket{job="secure-app"}[5m])) by (le)) > 1.0
+        for: 5m
+        labels:
+          severity: warning
+          component: business
+        annotations:
+          summary: "High dependency latency"
+          description: "External dependency latency P95: {{ $value }}s"
