@@ -1,0 +1,250 @@
+---
+# Pod Security Policy (for clusters that still use PSP)
+apiVersion: policy/v1beta1
+kind: PodSecurityPolicy
+metadata:
+  name: secure-app-psp
+  labels:
+    app: secure-app
+    security.policy: "restricted"
+spec:
+  privileged: false
+  allowPrivilegeEscalation: false
+  requiredDropCapabilities:
+    - ALL
+  volumes:
+    - 'configMap'
+    - 'emptyDir'
+    - 'projected'
+    - 'secret'
+    - 'downwardAPI'
+    - 'persistentVolumeClaim'
+  hostNetwork: false
+  hostIPC: false
+  hostPID: false
+  runAsUser:
+    rule: 'MustRunAsNonRoot'
+  supplementalGroups:
+    rule: 'MustRunAs'
+    ranges:
+      - min: 1
+        max: 65535
+  fsGroup:
+    rule: 'MustRunAs'
+    ranges:
+      - min: 1
+        max: 65535
+  readOnlyRootFilesystem: true
+  seccompProfile:
+    type: RuntimeDefault
+  seLinux:
+    rule: RunAsAny
+
+---
+# ValidatingAdmissionWebhook for additional security checks
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionWebhook
+metadata:
+  name: security-validation
+  labels:
+    app: security-webhook
+    component: admission-controller
+spec:
+  clientConfig:
+    service:
+      name: security-webhook
+      namespace: security-system
+      path: "/validate"
+  rules:
+  - operations: ["CREATE", "UPDATE"]
+    apiGroups: [""]
+    apiVersions: ["v1"]
+    resources: ["pods"]
+  - operations: ["CREATE", "UPDATE"]
+    apiGroups: ["apps"]
+    apiVersions: ["v1"]
+    resources: ["deployments", "daemonsets", "statefulsets"]
+  admissionReviewVersions: ["v1", "v1beta1"]
+  sideEffects: None
+  failurePolicy: Fail
+  timeoutSeconds: 10
+
+---
+# Open Policy Agent Gatekeeper ConstraintTemplate
+apiVersion: templates.gatekeeper.sh/v1beta1
+kind: ConstraintTemplate
+metadata:
+  name: k8srequiredsecuritycontext
+  labels:
+    component: gatekeeper
+    security.policy: "required"
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sRequiredSecurityContext
+      validation:
+        type: object
+        properties:
+          runAsNonRoot:
+            type: boolean
+          readOnlyRootFilesystem:
+            type: boolean
+          allowPrivilegeEscalation:
+            type: boolean
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8srequiredsecuritycontext
+
+        violation[{"msg": msg}] {
+          container := input.review.object.spec.containers[_]
+          not container.securityContext.runAsNonRoot
+          msg := "Container must run as non-root user"
+        }
+
+        violation[{"msg": msg}] {
+          container := input.review.object.spec.containers[_]
+          not container.securityContext.readOnlyRootFilesystem
+          msg := "Container must use read-only root filesystem"
+        }
+
+        violation[{"msg": msg}] {
+          container := input.review.object.spec.containers[_]
+          container.securityContext.allowPrivilegeEscalation != false
+          msg := "Container must not allow privilege escalation"
+        }
+
+---
+# Gatekeeper Constraint to enforce security context
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sRequiredSecurityContext
+metadata:
+  name: must-have-security-context
+  labels:
+    component: gatekeeper
+    security.policy: "enforced"
+spec:
+  match:
+    kinds:
+      - apiGroups: ["apps"]
+        kinds: ["Deployment", "DaemonSet", "StatefulSet"]
+      - apiGroups: [""]
+        kinds: ["Pod"]
+    excludedNamespaces: ["kube-system", "kube-public", "gatekeeper-system"]
+  parameters:
+    runAsNonRoot: true
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+
+---
+# Network Policy to restrict traffic
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: secure-app-netpol
+  labels:
+    app: secure-app
+    component: network-security
+spec:
+  podSelector:
+    matchLabels:
+      app: secure-app
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: ingress-nginx
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring
+    - podSelector:
+        matchLabels:
+          app: load-balancer
+    ports:
+    - protocol: TCP
+      port: 3000
+  egress:
+  # Allow DNS resolution
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  # Allow HTTPS for external API calls
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 443
+  # Allow communication with monitoring
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring
+    ports:
+    - protocol: TCP
+      port: 9090
+    - protocol: TCP
+      port: 3000
+
+---
+# Resource Quota for namespace
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: secure-app-quota
+  labels:
+    app: secure-app
+    component: resource-management
+spec:
+  hard:
+    requests.cpu: "2"
+    requests.memory: 4Gi
+    requests.storage: 10Gi
+    limits.cpu: "4"
+    limits.memory: 8Gi
+    count/persistentvolumeclaims: "4"
+    count/services: "5"
+    count/secrets: "10"
+    count/configmaps: "10"
+    count/pods: "10"
+
+---
+# Limit Range for pod resource constraints
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: secure-app-limits
+  labels:
+    app: secure-app
+    component: resource-management
+spec:
+  limits:
+  - default:
+      cpu: 500m
+      memory: 512Mi
+      ephemeral-storage: 2Gi
+    defaultRequest:
+      cpu: 100m
+      memory: 128Mi
+      ephemeral-storage: 1Gi
+    max:
+      cpu: "2"
+      memory: 2Gi
+      ephemeral-storage: 5Gi
+    min:
+      cpu: 50m
+      memory: 64Mi
+      ephemeral-storage: 500Mi
+    type: Container
+  - default:
+      storage: 5Gi
+    max:
+      storage: 20Gi
+    min:
+      storage: 1Gi
+    type: PersistentVolumeClaim

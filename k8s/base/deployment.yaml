@@ -131,147 +131,136 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: secure-app
-  namespace: devsecops-pipeline
   labels:
     app: secure-app
-    component: backend
     version: v1.0.0
-    managed-by: devsecops-pipeline
-    environment: production
+    security.policy: "restricted"
   annotations:
-    security.policy/reviewed-by: "security-team"
-    security.policy/review-date: "2025-01-01"
     deployment.kubernetes.io/revision: "1"
+    security.alpha.kubernetes.io/audit: "true"
 spec:
   replicas: 3
   strategy:
     type: RollingUpdate
     rollingUpdate:
+      maxUnavailable: 1
       maxSurge: 1
-      maxUnavailable: 0
   selector:
     matchLabels:
       app: secure-app
-      component: backend
   template:
     metadata:
       labels:
         app: secure-app
-        component: backend
         version: v1.0.0
-        managed-by: devsecops-pipeline
-        environment: production
+        security.policy: "restricted"
       annotations:
-        security.policy/reviewed-by: "security-team"
-        security.policy/review-date: "2025-01-01"
         prometheus.io/scrape: "true"
-        prometheus.io/port: "8080"
-        prometheus.io/path: "/actuator/prometheus"
+        prometheus.io/port: "3000"
+        prometheus.io/path: "/metrics"
     spec:
-      serviceAccountName: app-service-account
+      serviceAccountName: secure-app-sa
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
-        runAsUser: 1000
-        runAsGroup: 3000
-        fsGroup: 2000
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        fsGroupChangePolicy: "OnRootMismatch"
         seccompProfile:
           type: RuntimeDefault
+        supplementalGroups: [1001]
       containers:
-      - name: app
-        image: your-registry.com/secure-app:v1.0.0
+      - name: secure-app
+        image: secure-app:latest
         imagePullPolicy: Always
         ports:
         - name: http
-          containerPort: 8080
+          containerPort: 3000
           protocol: TCP
         env:
-        - name: SPRING_PROFILES_ACTIVE
+        - name: NODE_ENV
           value: "production"
-        - name: DATABASE_URL
-          value: "postgresql://postgres:5432/app"
-        - name: DATABASE_USERNAME
-          value: "app_user"
+        - name: PORT
+          value: "3000"
+        - name: LOG_LEVEL
+          value: "info"
+        - name: METRICS_ENABLED
+          value: "true"
         envFrom:
         - configMapRef:
-            name: app-config
-        securityContext:
-          allowPrivilegeEscalation: false
-          runAsNonRoot: true
-          runAsUser: 1000
-          runAsGroup: 3000
-          readOnlyRootFilesystem: true
-          capabilities:
-            drop:
-            - ALL
-          seccompProfile:
-            type: RuntimeDefault
+            name: secure-app-config
+        - secretRef:
+            name: secure-app-secrets
         resources:
           requests:
-            memory: "256Mi"
+            memory: "128Mi"
             cpu: "100m"
             ephemeral-storage: "1Gi"
           limits:
             memory: "512Mi"
             cpu: "500m"
             ephemeral-storage: "2Gi"
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 1001
+          runAsGroup: 1001
+          capabilities:
+            drop:
+            - ALL
+          seccompProfile:
+            type: RuntimeDefault
         livenessProbe:
           httpGet:
-            path: /actuator/health/liveness
+            path: /health
             port: http
             scheme: HTTP
-          initialDelaySeconds: 60
-          periodSeconds: 30
+          initialDelaySeconds: 30
+          periodSeconds: 10
           timeoutSeconds: 5
-          failureThreshold: 3
           successThreshold: 1
+          failureThreshold: 3
         readinessProbe:
           httpGet:
-            path: /actuator/health/readiness
+            path: /ready
             port: http
             scheme: HTTP
-          initialDelaySeconds: 30
-          periodSeconds: 10
-          timeoutSeconds: 5
-          failureThreshold: 3
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
           successThreshold: 1
+          failureThreshold: 3
         startupProbe:
           httpGet:
-            path: /actuator/health/startup
+            path: /health
             port: http
             scheme: HTTP
-          initialDelaySeconds: 30
-          periodSeconds: 10
-          timeoutSeconds: 5
-          failureThreshold: 10
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
           successThreshold: 1
+          failureThreshold: 30
         volumeMounts:
-        - name: tmp-volume
+        - name: tmp
           mountPath: /tmp
-        - name: cache-volume
-          mountPath: /app/cache
-        - name: logs-volume
-          mountPath: /app/logs
-        - name: app-secrets
-          mountPath: /app/secrets
-          readOnly: true
+        - name: var-cache
+          mountPath: /var/cache
+        - name: var-run
+          mountPath: /var/run
       volumes:
-      - name: tmp-volume
+      - name: tmp
         emptyDir:
           sizeLimit: 100Mi
-      - name: cache-volume
+      - name: var-cache
         emptyDir:
-          sizeLimit: 500Mi
-      - name: logs-volume
+          sizeLimit: 100Mi
+      - name: var-run
         emptyDir:
-          sizeLimit: 1Gi
-      - name: app-secrets
-        secret:
-          secretName: app-secrets
-          defaultMode: 0400
+          sizeLimit: 100Mi
       nodeSelector:
         kubernetes.io/os: linux
-        node.kubernetes.io/instance-type: "standard"
       tolerations:
       - key: "app"
         operator: "Equal"
@@ -289,9 +278,9 @@ spec:
                   values:
                   - secure-app
               topologyKey: kubernetes.io/hostname
-      terminationGracePeriodSeconds: 30
       dnsPolicy: ClusterFirst
       restartPolicy: Always
+      terminationGracePeriodSeconds: 30
 ---
 apiVersion: v1
 kind: Service

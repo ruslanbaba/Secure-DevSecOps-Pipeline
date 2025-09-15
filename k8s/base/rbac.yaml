@@ -1,0 +1,135 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: secure-app-sa
+  labels:
+    app: secure-app
+    component: serviceaccount
+  annotations:
+    kubernetes.io/description: "Service account for secure-app with minimal permissions"
+automountServiceAccountToken: false
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: secure-app-role
+  labels:
+    app: secure-app
+    component: rbac
+rules:
+# Minimal permissions for the application
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list"]
+  resourceNames: ["secure-app-config"]
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get"]
+  resourceNames: ["secure-app-secrets"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: secure-app-rolebinding
+  labels:
+    app: secure-app
+    component: rbac
+subjects:
+- kind: ServiceAccount
+  name: secure-app-sa
+  namespace: default
+roleRef:
+  kind: Role
+  name: secure-app-role
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# ClusterRole for monitoring and metrics collection
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: secure-app-monitoring
+  labels:
+    app: secure-app
+    component: monitoring
+rules:
+- apiGroups: [""]
+  resources: ["nodes", "nodes/metrics", "services", "endpoints", "pods"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["extensions", "apps"]
+  resources: ["deployments", "replicasets"]
+  verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: secure-app-monitoring
+  labels:
+    app: secure-app
+    component: monitoring
+subjects:
+- kind: ServiceAccount
+  name: prometheus
+  namespace: monitoring
+roleRef:
+  kind: ClusterRole
+  name: secure-app-monitoring
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Security scanning service account
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: security-scanner
+  namespace: security-system
+  labels:
+    component: security
+    purpose: scanning
+automountServiceAccountToken: true
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: security-scanner
+  labels:
+    component: security
+    purpose: scanning
+rules:
+- apiGroups: [""]
+  resources: ["pods", "nodes", "namespaces", "services", "configmaps", "secrets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets", "daemonsets", "statefulsets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["networking.k8s.io"]
+  resources: ["networkpolicies", "ingresses"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["policy"]
+  resources: ["podsecuritypolicies", "poddisruptionbudgets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["rbac.authorization.k8s.io"]
+  resources: ["roles", "rolebindings", "clusterroles", "clusterrolebindings"]
+  verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: security-scanner
+  labels:
+    component: security
+    purpose: scanning
+subjects:
+- kind: ServiceAccount
+  name: security-scanner
+  namespace: security-system
+roleRef:
+  kind: ClusterRole
+  name: security-scanner
+  apiGroup: rbac.authorization.k8s.io

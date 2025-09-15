@@ -10,6 +10,11 @@ metadata:
 # Base resources
 resources:
   - deployment.yaml
+  - service.yaml
+  - configmap.yaml
+  - networkpolicy.yaml
+  - rbac.yaml
+  - security-policies.yaml
 
 # Common labels applied to all resources
 commonLabels:

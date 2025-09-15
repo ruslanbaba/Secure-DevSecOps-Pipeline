@@ -1,12 +1,5 @@
 # Enterprise DevSecOps Pipeline for Containerized Workloads
 
-[![Security](https://img.shields.io/badge/Security-First-green.svg)](https://github.com/your-org/secure-devsecops-pipeline)
-[![Compliance](https://img.shields.io/badge/Compliance-SOC2%20%7C%20NIST%20%7C%20CIS-blue.svg)](https://github.com/your-org/secure-devsecops-pipeline)
-[![Pipeline](https://img.shields.io/badge/Pipeline-GitLab%20CI%2FCD-orange.svg)](https://github.com/your-org/secure-devsecops-pipeline)
-[![Kubernetes](https://img.shields.io/badge/Platform-Kubernetes-326CE5.svg)](https://github.com/your-org/secure-devsecops-pipeline)
-
-##  **Overview**
-
 A comprehensive, enterprise-grade DevSecOps pipeline framework that integrates security scanning, policy enforcement, and compliance validation into your containerized application deployment workflow. Built for Kubernetes with GitLab CI/CD, this framework implements industry best practices for secure software delivery.
 
 ### **Key Features**
