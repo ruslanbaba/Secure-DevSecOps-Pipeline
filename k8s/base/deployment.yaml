@@ -1,0 +1,484 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: devsecops-pipeline
+  labels:
+    name: devsecops-pipeline
+    environment: production
+    security.policy/enforce: "strict"
+    compliance.framework: "cis-k8s,nist,soc2"
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+  annotations:
+    security.policy/reviewed-by: "security-team"
+    security.policy/review-date: "2025-01-01"
+    compliance.audit/last-scan: "2025-01-01"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: app-service-account
+  namespace: devsecops-pipeline
+  labels:
+    app: secure-app
+    component: backend
+    version: v1.0.0
+    managed-by: devsecops-pipeline
+    environment: production
+  annotations:
+    security.policy/reviewed-by: "security-team"
+    security.policy/review-date: "2025-01-01"
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: app-role
+  namespace: devsecops-pipeline
+  labels:
+    app: secure-app
+    component: rbac
+    version: v1.0.0
+    managed-by: devsecops-pipeline
+    environment: production
+rules:
+- apiGroups: [""]
+  resources: ["configmaps", "secrets"]
+  verbs: ["get", "list"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: app-role-binding
+  namespace: devsecops-pipeline
+  labels:
+    app: secure-app
+    component: rbac
+    version: v1.0.0
+    managed-by: devsecops-pipeline
+    environment: production
+subjects:
+- kind: ServiceAccount
+  name: app-service-account
+  namespace: devsecops-pipeline
+roleRef:
+  kind: Role
+  name: app-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: devsecops-pipeline
+  labels:
+    app: secure-app
+    component: config
+    version: v1.0.0
+    managed-by: devsecops-pipeline
+    environment: production
+  annotations:
+    security.policy/reviewed-by: "security-team"
+    security.policy/review-date: "2025-01-01"
+data:
+  app.properties: |
+    # Application configuration
+    server.port=8080
+    spring.profiles.active=production
+    logging.level.com.example=INFO
+    management.endpoints.web.exposure.include=health,info,metrics
+    management.endpoint.health.show-details=when-authorized
+  logback.xml: |
+    <?xml version="1.0" encoding="UTF-8"?>
+    <configuration>
+        <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder>
+                <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+            </encoder>
+        </appender>
+        <root level="INFO">
+            <appender-ref ref="STDOUT" />
+        </root>
+    </configuration>
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: app-secrets
+  namespace: devsecops-pipeline
+  labels:
+    app: secure-app
+    component: secrets
+    version: v1.0.0
+    managed-by: devsecops-pipeline
+    environment: production
+  annotations:
+    security.policy/reviewed-by: "security-team"
+    security.policy/review-date: "2025-01-01"
+    encrypted: "true"
+type: Opaque
+data:
+  # Base64 encoded secrets (these should be replaced with actual encrypted values)
+  database-password: cGFzc3dvcmQxMjM=  # Replace with actual secret
+  api-key: YXBpa2V5MTIz  # Replace with actual secret
+  jwt-secret: and0c2VjcmV0MTIz  # Replace with actual secret
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: secure-app
+  namespace: devsecops-pipeline
+  labels:
+    app: secure-app
+    component: backend
+    version: v1.0.0
+    managed-by: devsecops-pipeline
+    environment: production
+  annotations:
+    security.policy/reviewed-by: "security-team"
+    security.policy/review-date: "2025-01-01"
+    deployment.kubernetes.io/revision: "1"
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: secure-app
+      component: backend
+  template:
+    metadata:
+      labels:
+        app: secure-app
+        component: backend
+        version: v1.0.0
+        managed-by: devsecops-pipeline
+        environment: production
+      annotations:
+        security.policy/reviewed-by: "security-team"
+        security.policy/review-date: "2025-01-01"
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/actuator/prometheus"
+    spec:
+      serviceAccountName: app-service-account
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 3000
+        fsGroup: 2000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: app
+        image: your-registry.com/secure-app:v1.0.0
+        imagePullPolicy: Always
+        ports:
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+        env:
+        - name: SPRING_PROFILES_ACTIVE
+          value: "production"
+        - name: DATABASE_URL
+          value: "postgresql://postgres:5432/app"
+        - name: DATABASE_USERNAME
+          value: "app_user"
+        envFrom:
+        - configMapRef:
+            name: app-config
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 3000
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+          seccompProfile:
+            type: RuntimeDefault
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+            ephemeral-storage: "1Gi"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+            ephemeral-storage: "2Gi"
+        livenessProbe:
+          httpGet:
+            path: /actuator/health/liveness
+            port: http
+            scheme: HTTP
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+          successThreshold: 1
+        readinessProbe:
+          httpGet:
+            path: /actuator/health/readiness
+            port: http
+            scheme: HTTP
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+          successThreshold: 1
+        startupProbe:
+          httpGet:
+            path: /actuator/health/startup
+            port: http
+            scheme: HTTP
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 10
+          successThreshold: 1
+        volumeMounts:
+        - name: tmp-volume
+          mountPath: /tmp
+        - name: cache-volume
+          mountPath: /app/cache
+        - name: logs-volume
+          mountPath: /app/logs
+        - name: app-secrets
+          mountPath: /app/secrets
+          readOnly: true
+      volumes:
+      - name: tmp-volume
+        emptyDir:
+          sizeLimit: 100Mi
+      - name: cache-volume
+        emptyDir:
+          sizeLimit: 500Mi
+      - name: logs-volume
+        emptyDir:
+          sizeLimit: 1Gi
+      - name: app-secrets
+        secret:
+          secretName: app-secrets
+          defaultMode: 0400
+      nodeSelector:
+        kubernetes.io/os: linux
+        node.kubernetes.io/instance-type: "standard"
+      tolerations:
+      - key: "app"
+        operator: "Equal"
+        value: "secure-app"
+        effect: "NoSchedule"
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - secure-app
+              topologyKey: kubernetes.io/hostname
+      terminationGracePeriodSeconds: 30
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: secure-app-service
+  namespace: devsecops-pipeline
+  labels:
+    app: secure-app
+    component: service
+    version: v1.0.0
+    managed-by: devsecops-pipeline
+    environment: production
+  annotations:
+    security.policy/reviewed-by: "security-team"
+    security.policy/review-date: "2025-01-01"
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    service.beta.kubernetes.io/aws-load-balancer-backend-protocol: "http"
+    service.beta.kubernetes.io/aws-load-balancer-ssl-cert: "arn:aws:acm:region:account:certificate/cert-id"
+    service.beta.kubernetes.io/aws-load-balancer-ssl-ports: "https"
+spec:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: 80
+    targetPort: http
+    protocol: TCP
+  selector:
+    app: secure-app
+    component: backend
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: secure-app-ingress
+  namespace: devsecops-pipeline
+  labels:
+    app: secure-app
+    component: ingress
+    version: v1.0.0
+    managed-by: devsecops-pipeline
+    environment: production
+  annotations:
+    security.policy/reviewed-by: "security-team"
+    security.policy/review-date: "2025-01-01"
+    kubernetes.io/ingress.class: "nginx"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/ssl-protocols: "TLSv1.2 TLSv1.3"
+    nginx.ingress.kubernetes.io/ssl-ciphers: "ECDHE-RSA-AES128-GCM-SHA256,ECDHE-RSA-AES256-GCM-SHA384"
+    nginx.ingress.kubernetes.io/server-snippet: |
+      add_header X-Frame-Options "SAMEORIGIN" always;
+      add_header X-Content-Type-Options "nosniff" always;
+      add_header X-XSS-Protection "1; mode=block" always;
+      add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+      add_header Content-Security-Policy "default-src 'self'" always;
+spec:
+  tls:
+  - hosts:
+    - secure-app.example.com
+    secretName: secure-app-tls
+  rules:
+  - host: secure-app.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: secure-app-service
+            port:
+              number: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: secure-app-network-policy
+  namespace: devsecops-pipeline
+  labels:
+    app: secure-app
+    component: network-policy
+    version: v1.0.0
+    managed-by: devsecops-pipeline
+    environment: production
+  annotations:
+    security.policy/reviewed-by: "security-team"
+    security.policy/review-date: "2025-01-01"
+spec:
+  podSelector:
+    matchLabels:
+      app: secure-app
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: ingress-nginx
+    - podSelector:
+        matchLabels:
+          app: prometheus
+    ports:
+    - protocol: TCP
+      port: 8080
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: kube-system
+    ports:
+    - protocol: UDP
+      port: 53
+  - to:
+    - podSelector:
+        matchLabels:
+          app: postgresql
+    ports:
+    - protocol: TCP
+      port: 5432
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 443
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: secure-app-pdb
+  namespace: devsecops-pipeline
+  labels:
+    app: secure-app
+    component: pdb
+    version: v1.0.0
+    managed-by: devsecops-pipeline
+    environment: production
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: secure-app
+      component: backend
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: secure-app-hpa
+  namespace: devsecops-pipeline
+  labels:
+    app: secure-app
+    component: hpa
+    version: v1.0.0
+    managed-by: devsecops-pipeline
+    environment: production
+  annotations:
+    security.policy/reviewed-by: "security-team"
+    security.policy/review-date: "2025-01-01"
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: secure-app
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 10
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60

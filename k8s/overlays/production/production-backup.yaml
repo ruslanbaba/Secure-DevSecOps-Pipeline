@@ -1,0 +1,242 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backup-config
+  namespace: devsecops-pipeline-production
+  labels:
+    app: secure-app
+    component: backup
+    version: v1.0.0
+    managed-by: devsecops-pipeline
+    environment: production
+data:
+  backup-script.sh: |
+    #!/bin/bash
+    set -euo pipefail
+    
+    # Backup configuration
+    BACKUP_DIR="/backup"
+    TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+    BACKUP_FILE="secure-app-backup-${TIMESTAMP}.tar.gz"
+    
+    # Create backup directory
+    mkdir -p "${BACKUP_DIR}"
+    
+    # Backup application data
+    echo "Starting backup at $(date)"
+    
+    # Backup persistent volumes (if any)
+    kubectl get pv -o yaml > "${BACKUP_DIR}/persistent-volumes-${TIMESTAMP}.yaml"
+    
+    # Backup secrets and configmaps
+    kubectl get secrets -n devsecops-pipeline-production -o yaml > "${BACKUP_DIR}/secrets-${TIMESTAMP}.yaml"
+    kubectl get configmaps -n devsecops-pipeline-production -o yaml > "${BACKUP_DIR}/configmaps-${TIMESTAMP}.yaml"
+    
+    # Create compressed backup
+    tar -czf "${BACKUP_DIR}/${BACKUP_FILE}" -C "${BACKUP_DIR}" .
+    
+    # Upload to S3 (example)
+    if command -v aws >/dev/null 2>&1; then
+        aws s3 cp "${BACKUP_DIR}/${BACKUP_FILE}" "s3://your-backup-bucket/devsecops-pipeline/"
+    fi
+    
+    # Cleanup old backups (keep last 7 days)
+    find "${BACKUP_DIR}" -name "secure-app-backup-*.tar.gz" -mtime +7 -delete
+    
+    echo "Backup completed at $(date)"
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: secure-app-backup
+  namespace: devsecops-pipeline-production
+  labels:
+    app: secure-app
+    component: backup
+    version: v1.0.0
+    managed-by: devsecops-pipeline
+    environment: production
+  annotations:
+    security.policy/reviewed-by: "security-team"
+    security.policy/review-date: "2025-01-01"
+spec:
+  schedule: "0 2 * * *"  # Daily at 2 AM
+  timeZone: "UTC"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app: secure-app
+            component: backup
+            version: v1.0.0
+            managed-by: devsecops-pipeline
+            environment: production
+        spec:
+          serviceAccountName: backup-service-account
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 3000
+            fsGroup: 2000
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+          - name: backup
+            image: alpine/k8s:1.24.0
+            imagePullPolicy: IfNotPresent
+            command:
+            - /bin/sh
+            - /backup-config/backup-script.sh
+            env:
+            - name: AWS_DEFAULT_REGION
+              value: "us-west-2"
+            securityContext:
+              allowPrivilegeEscalation: false
+              runAsNonRoot: true
+              runAsUser: 1000
+              runAsGroup: 3000
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop:
+                - ALL
+              seccompProfile:
+                type: RuntimeDefault
+            resources:
+              requests:
+                memory: "64Mi"
+                cpu: "50m"
+                ephemeral-storage: "1Gi"
+              limits:
+                memory: "128Mi"
+                cpu: "100m"
+                ephemeral-storage: "2Gi"
+            volumeMounts:
+            - name: backup-config
+              mountPath: /backup-config
+              readOnly: true
+            - name: backup-storage
+              mountPath: /backup
+            - name: aws-credentials
+              mountPath: /root/.aws
+              readOnly: true
+          volumes:
+          - name: backup-config
+            configMap:
+              name: backup-config
+              defaultMode: 0755
+          - name: backup-storage
+            persistentVolumeClaim:
+              claimName: backup-pvc
+          - name: aws-credentials
+            secret:
+              secretName: aws-backup-credentials
+              defaultMode: 0400
+          restartPolicy: OnFailure
+          terminationGracePeriodSeconds: 30
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: backup-pvc
+  namespace: devsecops-pipeline-production
+  labels:
+    app: secure-app
+    component: backup
+    version: v1.0.0
+    managed-by: devsecops-pipeline
+    environment: production
+  annotations:
+    security.policy/reviewed-by: "security-team"
+    security.policy/review-date: "2025-01-01"
+    encrypted: "true"
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: gp3-encrypted
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: backup-service-account
+  namespace: devsecops-pipeline-production
+  labels:
+    app: secure-app
+    component: backup
+    version: v1.0.0
+    managed-by: devsecops-pipeline
+    environment: production
+  annotations:
+    security.policy/reviewed-by: "security-team"
+    security.policy/review-date: "2025-01-01"
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: backup-role
+  namespace: devsecops-pipeline-production
+  labels:
+    app: secure-app
+    component: backup
+    version: v1.0.0
+    managed-by: devsecops-pipeline
+    environment: production
+rules:
+- apiGroups: [""]
+  resources: ["persistentvolumes", "persistentvolumeclaims"]
+  verbs: ["get", "list"]
+- apiGroups: [""]
+  resources: ["secrets", "configmaps"]
+  verbs: ["get", "list"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "statefulsets"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: backup-role-binding
+  namespace: devsecops-pipeline-production
+  labels:
+    app: secure-app
+    component: backup
+    version: v1.0.0
+    managed-by: devsecops-pipeline
+    environment: production
+subjects:
+- kind: ServiceAccount
+  name: backup-service-account
+  namespace: devsecops-pipeline-production
+roleRef:
+  kind: Role
+  name: backup-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: aws-backup-credentials
+  namespace: devsecops-pipeline-production
+  labels:
+    app: secure-app
+    component: backup
+    version: v1.0.0
+    managed-by: devsecops-pipeline
+    environment: production
+  annotations:
+    security.policy/reviewed-by: "security-team"
+    security.policy/review-date: "2025-01-01"
+    encrypted: "true"
+type: Opaque
+data:
+  # Base64 encoded AWS credentials (replace with actual values)
+  credentials: |
+    W2RlZmF1bHRdCmF3c19hY2Nlc3Nfa2V5X2lkID0gWU9VUl9BQ0NFU1NfS0VZX0lECmF3c19zZWNy
+    ZXRfYWNjZXNzX2tleSA9IFlPVVJfU0VDUkVUX0FDQ0VTU19LRVk=

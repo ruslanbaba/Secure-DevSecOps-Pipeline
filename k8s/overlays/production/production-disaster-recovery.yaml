@@ -1,0 +1,401 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: disaster-recovery-config
+  namespace: devsecops-pipeline-production
+  labels:
+    app: secure-app
+    component: disaster-recovery
+    version: v1.0.0
+    managed-by: devsecops-pipeline
+    environment: production
+data:
+  dr-runbook.md: |
+    # Disaster Recovery Runbook
+    
+    ## Emergency Contacts
+    - Security Team: security@company.com
+    - DevOps Team: devops@company.com
+    - On-call Engineer: +1-XXX-XXX-XXXX
+    
+    ## Recovery Procedures
+    
+    ### 1. Assessment Phase (0-15 minutes)
+    - [ ] Identify the scope of the incident
+    - [ ] Determine if security breach is involved
+    - [ ] Activate incident response team
+    - [ ] Document incident start time
+    
+    ### 2. Containment Phase (15-30 minutes)
+    - [ ] Isolate affected systems
+    - [ ] Preserve evidence if security incident
+    - [ ] Stop further damage propagation
+    - [ ] Notify stakeholders
+    
+    ### 3. Recovery Phase (30 minutes - 4 hours)
+    - [ ] Execute backup restoration
+    - [ ] Verify system integrity
+    - [ ] Conduct security scans
+    - [ ] Validate functionality
+    
+    ### 4. Communication Phase (Ongoing)
+    - [ ] Update stakeholders every 30 minutes
+    - [ ] Document all actions taken
+    - [ ] Prepare status reports
+    - [ ] Coordinate with external parties if needed
+    
+    ## Recovery Scripts
+    See mounted scripts for automated recovery procedures.
+  
+  recovery-script.sh: |
+    #!/bin/bash
+    set -euo pipefail
+    
+    # Disaster Recovery Script
+    echo "=== Disaster Recovery Process Started ==="
+    echo "Timestamp: $(date)"
+    
+    # Configuration
+    NAMESPACE="devsecops-pipeline-production"
+    BACKUP_BUCKET="your-backup-bucket"
+    DR_REGION="us-east-1"  # Different region for DR
+    
+    # Functions
+    log() {
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+    }
+    
+    check_prerequisites() {
+        log "Checking prerequisites..."
+        
+        # Check kubectl access
+        if ! kubectl auth can-i get pods -n "${NAMESPACE}"; then
+            log "ERROR: Insufficient permissions"
+            exit 1
+        fi
+        
+        # Check AWS CLI
+        if ! command -v aws >/dev/null 2>&1; then
+            log "ERROR: AWS CLI not found"
+            exit 1
+        fi
+        
+        log "Prerequisites check passed"
+    }
+    
+    restore_from_backup() {
+        local backup_file=$1
+        log "Restoring from backup: ${backup_file}"
+        
+        # Download backup from S3
+        aws s3 cp "s3://${BACKUP_BUCKET}/devsecops-pipeline/${backup_file}" /tmp/
+        
+        # Extract backup
+        tar -xzf "/tmp/${backup_file}" -C /tmp/restore/
+        
+        # Restore secrets and configmaps
+        kubectl apply -f /tmp/restore/secrets-*.yaml
+        kubectl apply -f /tmp/restore/configmaps-*.yaml
+        
+        log "Backup restoration completed"
+    }
+    
+    verify_deployment() {
+        log "Verifying deployment health..."
+        
+        # Wait for pods to be ready
+        kubectl wait --for=condition=ready pod -l app=secure-app -n "${NAMESPACE}" --timeout=300s
+        
+        # Check service endpoints
+        kubectl get endpoints -n "${NAMESPACE}"
+        
+        # Verify security policies
+        kubectl auth can-i create pods --as=system:serviceaccount:"${NAMESPACE}":default -n "${NAMESPACE}"
+        
+        log "Deployment verification completed"
+    }
+    
+    run_security_scan() {
+        log "Running post-recovery security scan..."
+        
+        # Container security scan
+        trivy k8s --namespace "${NAMESPACE}" --format json --output /tmp/security-scan.json
+        
+        # Policy validation
+        conftest verify --policy /security/policies/ k8s/
+        
+        log "Security scan completed"
+    }
+    
+    # Main execution
+    main() {
+        case "${1:-}" in
+            "assess")
+                log "Running assessment phase..."
+                check_prerequisites
+                kubectl get pods,services,ingress -n "${NAMESPACE}"
+                kubectl describe nodes
+                ;;
+            "restore")
+                log "Running restoration phase..."
+                check_prerequisites
+                BACKUP_FILE="${2:-$(aws s3 ls s3://${BACKUP_BUCKET}/devsecops-pipeline/ | grep 'secure-app-backup-' | tail -n1 | awk '{print $4}')}"
+                restore_from_backup "${BACKUP_FILE}"
+                ;;
+            "verify")
+                log "Running verification phase..."
+                verify_deployment
+                run_security_scan
+                ;;
+            "full")
+                log "Running full disaster recovery..."
+                check_prerequisites
+                BACKUP_FILE="${2:-$(aws s3 ls s3://${BACKUP_BUCKET}/devsecops-pipeline/ | grep 'secure-app-backup-' | tail -n1 | awk '{print $4}')}"
+                restore_from_backup "${BACKUP_FILE}"
+                verify_deployment
+                run_security_scan
+                ;;
+            *)
+                echo "Usage: $0 {assess|restore|verify|full} [backup-file]"
+                exit 1
+                ;;
+        esac
+        
+        log "Disaster recovery process completed"
+    }
+    
+    # Execute main function
+    main "$@"
+
+  security-incident-response.sh: |
+    #!/bin/bash
+    set -euo pipefail
+    
+    # Security Incident Response Script
+    echo "=== Security Incident Response Started ==="
+    echo "Timestamp: $(date)"
+    
+    # Configuration
+    NAMESPACE="devsecops-pipeline-production"
+    INCIDENT_ID="${INCIDENT_ID:-$(date +%Y%m%d_%H%M%S)}"
+    
+    log() {
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INCIDENT-${INCIDENT_ID}] $*"
+    }
+    
+    # Evidence collection
+    collect_evidence() {
+        log "Collecting forensic evidence..."
+        
+        EVIDENCE_DIR="/tmp/incident-${INCIDENT_ID}"
+        mkdir -p "${EVIDENCE_DIR}"
+        
+        # Collect pod logs
+        kubectl logs -n "${NAMESPACE}" --all-containers=true --previous=false > "${EVIDENCE_DIR}/current-logs.txt"
+        kubectl logs -n "${NAMESPACE}" --all-containers=true --previous=true > "${EVIDENCE_DIR}/previous-logs.txt" || true
+        
+        # Collect events
+        kubectl get events -n "${NAMESPACE}" --sort-by='.firstTimestamp' > "${EVIDENCE_DIR}/events.txt"
+        
+        # Collect current state
+        kubectl get all -n "${NAMESPACE}" -o yaml > "${EVIDENCE_DIR}/current-state.yaml"
+        
+        # Collect network policies
+        kubectl get networkpolicies -n "${NAMESPACE}" -o yaml > "${EVIDENCE_DIR}/network-policies.yaml"
+        
+        # Collect security contexts
+        kubectl get pods -n "${NAMESPACE}" -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.securityContext}{"\n"}{end}' > "${EVIDENCE_DIR}/security-contexts.txt"
+        
+        log "Evidence collected in ${EVIDENCE_DIR}"
+    }
+    
+    # Immediate containment
+    immediate_containment() {
+        log "Implementing immediate containment measures..."
+        
+        # Scale down potentially compromised deployments
+        kubectl scale deployment secure-app -n "${NAMESPACE}" --replicas=0
+        
+        # Apply strict network policy (deny all)
+        cat <<EOF | kubectl apply -f -
+    apiVersion: networking.k8s.io/v1
+    kind: NetworkPolicy
+    metadata:
+      name: incident-lockdown-${INCIDENT_ID}
+      namespace: ${NAMESPACE}
+    spec:
+      podSelector: {}
+      policyTypes:
+      - Ingress
+      - Egress
+    EOF
+        
+        # Remove external access
+        kubectl patch service secure-app-service -n "${NAMESPACE}" -p '{"spec":{"type":"ClusterIP"}}'
+        
+        log "Containment measures applied"
+    }
+    
+    # Security analysis
+    security_analysis() {
+        log "Performing security analysis..."
+        
+        # Run Trivy security scan
+        trivy k8s --namespace "${NAMESPACE}" --format json --output "/tmp/incident-${INCIDENT_ID}/trivy-scan.json"
+        
+        # Check for privileged containers
+        kubectl get pods -n "${NAMESPACE}" -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.containers[*].securityContext.privileged}{"\n"}{end}' > "/tmp/incident-${INCIDENT_ID}/privileged-check.txt"
+        
+        # Validate OPA policies
+        conftest verify --policy /security/policies/ --output json k8s/ > "/tmp/incident-${INCIDENT_ID}/policy-violations.json" || true
+        
+        log "Security analysis completed"
+    }
+    
+    # Generate incident report
+    generate_report() {
+        log "Generating incident report..."
+        
+        REPORT_FILE="/tmp/incident-${INCIDENT_ID}/incident-report.md"
+        
+        cat > "${REPORT_FILE}" <<EOF
+    # Security Incident Report
+    
+    **Incident ID:** ${INCIDENT_ID}
+    **Date/Time:** $(date)
+    **Namespace:** ${NAMESPACE}
+    **Status:** Under Investigation
+    
+    ## Timeline
+    - $(date): Incident detected and response initiated
+    - $(date): Evidence collection completed
+    - $(date): Containment measures applied
+    - $(date): Security analysis performed
+    
+    ## Actions Taken
+    1. Scaled down potentially affected deployments
+    2. Applied network isolation policies
+    3. Collected forensic evidence
+    4. Performed security scans
+    
+    ## Evidence Files
+    - current-logs.txt: Application logs at time of incident
+    - previous-logs.txt: Previous application logs
+    - events.txt: Kubernetes events
+    - current-state.yaml: Complete system state
+    - trivy-scan.json: Container vulnerability scan
+    - policy-violations.json: OPA policy violations
+    
+    ## Recommendations
+    1. Review security scan results
+    2. Analyze collected logs for indicators of compromise
+    3. Validate all policy violations
+    4. Consider implementing additional security controls
+    
+    ## Next Steps
+    - [ ] Complete forensic analysis
+    - [ ] Implement additional security measures
+    - [ ] Update incident response procedures
+    - [ ] Conduct post-incident review
+    EOF
+        
+        log "Incident report generated: ${REPORT_FILE}"
+    }
+    
+    # Main execution
+    main() {
+        case "${1:-}" in
+            "detect")
+                log "Incident detection phase..."
+                collect_evidence
+                ;;
+            "contain")
+                log "Incident containment phase..."
+                immediate_containment
+                ;;
+            "analyze")
+                log "Incident analysis phase..."
+                security_analysis
+                ;;
+            "report")
+                log "Incident reporting phase..."
+                generate_report
+                ;;
+            "full")
+                log "Full incident response..."
+                collect_evidence
+                immediate_containment
+                security_analysis
+                generate_report
+                ;;
+            *)
+                echo "Usage: $0 {detect|contain|analyze|report|full}"
+                exit 1
+                ;;
+        esac
+        
+        log "Security incident response phase completed"
+    }
+    
+    # Execute main function
+    main "$@"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: disaster-recovery-sa
+  namespace: devsecops-pipeline-production
+  labels:
+    app: secure-app
+    component: disaster-recovery
+    version: v1.0.0
+    managed-by: devsecops-pipeline
+    environment: production
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: disaster-recovery-role
+  labels:
+    app: secure-app
+    component: disaster-recovery
+    version: v1.0.0
+    managed-by: devsecops-pipeline
+    environment: production
+rules:
+- apiGroups: [""]
+  resources: ["pods", "services", "endpoints", "persistentvolumeclaims", "events", "configmaps", "secrets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["networking.k8s.io"]
+  resources: ["networkpolicies", "ingresses"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["metrics.k8s.io"]
+  resources: ["nodes", "pods"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: disaster-recovery-binding
+  labels:
+    app: secure-app
+    component: disaster-recovery
+    version: v1.0.0
+    managed-by: devsecops-pipeline
+    environment: production
+subjects:
+- kind: ServiceAccount
+  name: disaster-recovery-sa
+  namespace: devsecops-pipeline-production
+roleRef:
+  kind: ClusterRole
+  name: disaster-recovery-role
+  apiGroup: rbac.authorization.k8s.io

@@ -1,0 +1,105 @@
+apiVersion: v1
+kind: ServiceMonitor
+metadata:
+  name: secure-app-metrics
+  namespace: devsecops-pipeline-production
+  labels:
+    app: secure-app
+    component: monitoring
+    version: v1.0.0
+    managed-by: devsecops-pipeline
+    environment: production
+spec:
+  selector:
+    matchLabels:
+      app: secure-app
+      component: backend
+  endpoints:
+  - port: http
+    path: /actuator/prometheus
+    interval: 30s
+    scrapeTimeout: 10s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: secure-app-alerts
+  namespace: devsecops-pipeline-production
+  labels:
+    app: secure-app
+    component: alerting
+    version: v1.0.0
+    managed-by: devsecops-pipeline
+    environment: production
+spec:
+  groups:
+  - name: secure-app.rules
+    rules:
+    - alert: SecureAppHighErrorRate
+      expr: |
+        (
+          rate(http_server_requests_seconds_count{job="secure-app",status=~"5.."}[5m])
+          /
+          rate(http_server_requests_seconds_count{job="secure-app"}[5m])
+        ) > 0.05
+      for: 5m
+      labels:
+        severity: critical
+        service: secure-app
+      annotations:
+        summary: "High error rate detected for Secure App"
+        description: "Error rate is {{ $value | humanizePercentage }} for the last 5 minutes"
+
+    - alert: SecureAppHighLatency
+      expr: |
+        histogram_quantile(0.95,
+          rate(http_server_requests_seconds_bucket{job="secure-app"}[5m])
+        ) > 1
+      for: 10m
+      labels:
+        severity: warning
+        service: secure-app
+      annotations:
+        summary: "High latency detected for Secure App"
+        description: "95th percentile latency is {{ $value }}s for the last 10 minutes"
+
+    - alert: SecureAppPodCrashLooping
+      expr: |
+        rate(kube_pod_container_status_restarts_total{namespace="devsecops-pipeline-production",pod=~"secure-app.*"}[15m]) > 0
+      for: 5m
+      labels:
+        severity: critical
+        service: secure-app
+      annotations:
+        summary: "Secure App pod is crash looping"
+        description: "Pod {{ $labels.pod }} is restarting frequently"
+
+    - alert: SecureAppMemoryUsageHigh
+      expr: |
+        (
+          container_memory_working_set_bytes{namespace="devsecops-pipeline-production",pod=~"secure-app.*"}
+          /
+          container_spec_memory_limit_bytes{namespace="devsecops-pipeline-production",pod=~"secure-app.*"}
+        ) > 0.85
+      for: 10m
+      labels:
+        severity: warning
+        service: secure-app
+      annotations:
+        summary: "High memory usage for Secure App"
+        description: "Memory usage is {{ $value | humanizePercentage }} for pod {{ $labels.pod }}"
+
+    - alert: SecureAppCPUUsageHigh
+      expr: |
+        (
+          rate(container_cpu_usage_seconds_total{namespace="devsecops-pipeline-production",pod=~"secure-app.*"}[5m])
+          /
+          container_spec_cpu_quota{namespace="devsecops-pipeline-production",pod=~"secure-app.*"} * 100000
+        ) > 0.8
+      for: 15m
+      labels:
+        severity: warning
+        service: secure-app
+      annotations:
+        summary: "High CPU usage for Secure App"
+        description: "CPU usage is {{ $value | humanizePercentage }} for pod {{ $labels.pod }}"

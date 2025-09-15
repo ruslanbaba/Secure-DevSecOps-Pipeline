@@ -1,0 +1,159 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+metadata:
+  name: secure-app-staging
+  annotations:
+    environment: staging
+    security.policy/reviewed-by: "security-team"
+    security.policy/review-date: "2025-01-01"
+
+# Base configuration
+bases:
+  - ../../base
+
+# Namespace override for staging
+namespace: devsecops-pipeline-staging
+
+# Name suffix for staging
+nameSuffix: -staging
+
+# Common labels for staging
+commonLabels:
+  environment: staging
+  app.kubernetes.io/instance: staging
+
+# Common annotations for staging
+commonAnnotations:
+  environment: staging
+  deployment.stage: staging
+  monitoring.enabled: "true"
+
+# Image tag override for staging
+images:
+  - name: your-registry.com/secure-app
+    newTag: staging-latest
+
+# Resource modifications for staging
+replicas:
+  - name: secure-app
+    count: 2
+
+# ConfigMap generator for staging environment
+configMapGenerator:
+  - name: staging-config
+    literals:
+      - DATABASE_HOST=postgres-staging.internal
+      - CACHE_ENABLED=true
+      - DEBUG_ENABLED=false
+      - EXTERNAL_API_URL=https://api-staging.example.com
+      - LOG_LEVEL=DEBUG
+    options:
+      disableNameSuffixHash: true
+
+# Secret generator for staging
+secretGenerator:
+  - name: staging-secrets
+    literals:
+      - api-key=staging-api-key-placeholder
+      - jwt-secret=staging-jwt-secret-placeholder
+    type: Opaque
+    options:
+      disableNameSuffixHash: true
+
+# Patches specific to staging
+patches:
+  # Reduce resource requirements for staging
+  - target:
+      kind: Deployment
+      name: secure-app
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: "128Mi"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: "50m"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: "256Mi"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/cpu
+        value: "200m"
+
+  # Update ingress host for staging
+  - target:
+      kind: Ingress
+      name: secure-app-ingress
+    patch: |-
+      - op: replace
+        path: /spec/rules/0/host
+        value: staging.secure-app.example.com
+      - op: replace
+        path: /spec/tls/0/hosts/0
+        value: staging.secure-app.example.com
+
+  # Add staging-specific environment variables
+  - target:
+      kind: Deployment
+      name: secure-app
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: ENVIRONMENT
+          value: "staging"
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: DEBUG_MODE
+          value: "true"
+
+# HPA configuration for staging
+patchesStrategicMerge:
+  - |-
+    apiVersion: autoscaling/v2
+    kind: HorizontalPodAutoscaler
+    metadata:
+      name: secure-app-hpa
+    spec:
+      minReplicas: 2
+      maxReplicas: 5
+      metrics:
+      - type: Resource
+        resource:
+          name: cpu
+          target:
+            type: Utilization
+            averageUtilization: 80
+
+# Network policy for staging
+  - |-
+    apiVersion: networking.k8s.io/v1
+    kind: NetworkPolicy
+    metadata:
+      name: secure-app-network-policy
+    spec:
+      egress:
+      - to:
+        - namespaceSelector:
+            matchLabels:
+              name: kube-system
+        ports:
+        - protocol: UDP
+          port: 53
+      - to:
+        - podSelector:
+            matchLabels:
+              app: postgresql-staging
+        ports:
+        - protocol: TCP
+          port: 5432
+      - to: []
+        ports:
+        - protocol: TCP
+          port: 443
+      - to: []
+        ports:
+        - protocol: TCP
+          port: 80

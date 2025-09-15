@@ -1,0 +1,591 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: performance-optimization-config
+  namespace: devsecops-pipeline-production
+  labels:
+    app: secure-app
+    component: performance
+    version: v1.0.0
+    managed-by: devsecops-pipeline
+    environment: production
+data:
+  performance-tuning.sh: |
+    #!/bin/bash
+    set -euo pipefail
+    
+    # Performance Optimization Script
+    echo "=== Performance Optimization Started ==="
+    echo "Timestamp: $(date)"
+    
+    # Configuration
+    NAMESPACE="devsecops-pipeline-production"
+    
+    log() {
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+    }
+    
+    # Resource optimization
+    optimize_resources() {
+        log "Optimizing resource allocation..."
+        
+        # Get current resource usage
+        kubectl top pods -n "${NAMESPACE}" --no-headers | while read -r pod cpu memory; do
+            echo "Pod: ${pod}, CPU: ${cpu}, Memory: ${memory}"
+            
+            # Get resource requests and limits
+            requests=$(kubectl get pod "${pod}" -n "${NAMESPACE}" -o jsonpath='{.spec.containers[0].resources.requests}')
+            limits=$(kubectl get pod "${pod}" -n "${NAMESPACE}" -o jsonpath='{.spec.containers[0].resources.limits}')
+            
+            echo "  Requests: ${requests}"
+            echo "  Limits: ${limits}"
+        done
+        
+        log "Resource optimization analysis completed"
+    }
+    
+    # Network performance optimization
+    optimize_network() {
+        log "Optimizing network performance..."
+        
+        # Check network policies efficiency
+        local network_policies
+        network_policies=$(kubectl get networkpolicies -n "${NAMESPACE}" --no-headers | wc -l)
+        log "Network policies count: ${network_policies}"
+        
+        # Check service mesh optimization
+        kubectl get services -n "${NAMESPACE}" -o json | jq '.items[] | {name: .metadata.name, type: .spec.type, endpoints: .spec.ports | length}'
+        
+        log "Network optimization completed"
+    }
+    
+    # Storage performance optimization
+    optimize_storage() {
+        log "Optimizing storage performance..."
+        
+        # Check PVC usage
+        kubectl get pvc -n "${NAMESPACE}" -o json | jq '.items[] | {name: .metadata.name, size: .spec.resources.requests.storage, storageClass: .spec.storageClassName}'
+        
+        # Check volume performance
+        kubectl describe pvc -n "${NAMESPACE}" | grep -E "(StorageClass|Volume)"
+        
+        log "Storage optimization completed"
+    }
+    
+    # Application performance tuning
+    tune_application() {
+        log "Tuning application performance..."
+        
+        # JVM tuning for Java applications
+        cat <<EOF > /tmp/jvm-tuning.yaml
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: jvm-tuning
+      namespace: ${NAMESPACE}
+    data:
+      JAVA_OPTS: |
+        -XX:+UseG1GC
+        -XX:MaxGCPauseMillis=200
+        -XX:+UseStringDeduplication
+        -XX:+OptimizeStringConcat
+        -Xms512m
+        -Xmx2g
+        -XX:+HeapDumpOnOutOfMemoryError
+        -XX:HeapDumpPath=/tmp/heapdump.hprof
+    EOF
+        
+        # Database connection pooling
+        cat <<EOF > /tmp/db-tuning.yaml
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: database-tuning
+      namespace: ${NAMESPACE}
+    data:
+      DB_POOL_SIZE: "20"
+      DB_POOL_MAX_IDLE: "5"
+      DB_POOL_MIN_IDLE: "2"
+      DB_CONNECTION_TIMEOUT: "30000"
+      DB_IDLE_TIMEOUT: "600000"
+    EOF
+        
+        log "Application tuning configurations created"
+    }
+    
+    # Generate performance report
+    generate_performance_report() {
+        log "Generating performance optimization report..."
+        
+        local report_file="/tmp/performance-report-$(date +%Y%m%d_%H%M%S).md"
+        
+        cat > "${report_file}" <<EOF
+    # Performance Optimization Report
+    
+    **Date:** $(date)
+    **Namespace:** ${NAMESPACE}
+    **Environment:** Production
+    
+    ## Resource Utilization
+    
+    ### CPU Usage
+    \`\`\`
+    $(kubectl top pods -n "${NAMESPACE}" --no-headers | awk '{print $1 ": " $2}')
+    \`\`\`
+    
+    ### Memory Usage
+    \`\`\`
+    $(kubectl top pods -n "${NAMESPACE}" --no-headers | awk '{print $1 ": " $3}')
+    \`\`\`
+    
+    ### Node Resource Allocation
+    \`\`\`
+    $(kubectl top nodes --no-headers)
+    \`\`\`
+    
+    ## Performance Metrics
+    
+    ### Response Time Targets
+    - API Response Time: < 200ms (95th percentile)
+    - Database Query Time: < 100ms (95th percentile)
+    - Container Startup Time: < 30s
+    
+    ### Throughput Targets
+    - Requests per Second: > 1000 RPS
+    - Concurrent Users: > 500
+    - Data Processing: > 10MB/s
+    
+    ## Optimization Recommendations
+    
+    ### 1. Resource Allocation
+    - **CPU:** Right-size based on actual usage patterns
+    - **Memory:** Implement memory limits with 20% headroom
+    - **Storage:** Use high-performance storage classes
+    
+    ### 2. Application Optimization
+    - **Caching:** Implement Redis caching layer
+    - **Database:** Optimize queries and connection pooling
+    - **JVM:** Tune garbage collection settings
+    
+    ### 3. Network Optimization
+    - **Service Mesh:** Consider Istio for advanced traffic management
+    - **Load Balancing:** Implement intelligent load balancing
+    - **CDN:** Use CDN for static content delivery
+    
+    ### 4. Kubernetes Optimization
+    - **Pod Affinity:** Co-locate related pods
+    - **Resource Quotas:** Implement namespace resource quotas
+    - **HPA:** Configure horizontal pod autoscaling
+    
+    ## Performance Monitoring
+    
+    ### Key Metrics to Monitor
+    1. Application response times
+    2. Resource utilization (CPU, Memory, Storage)
+    3. Network latency and throughput
+    4. Error rates and availability
+    5. Database performance metrics
+    
+    ### Alerting Thresholds
+    - CPU utilization > 80% for 5 minutes
+    - Memory utilization > 85% for 5 minutes
+    - Response time > 500ms for 2 minutes
+    - Error rate > 5% for 1 minute
+    
+    ## Performance Testing
+    
+    ### Load Testing Strategy
+    1. **Baseline Testing:** Establish performance baseline
+    2. **Stress Testing:** Identify breaking points
+    3. **Volume Testing:** Test with large data sets
+    4. **Endurance Testing:** Long-running performance validation
+    
+    ### Tools and Frameworks
+    - JMeter for load testing
+    - K6 for performance testing
+    - Gatling for high-performance testing
+    - Prometheus for monitoring
+    
+    ## Next Steps
+    
+    1. Implement recommended optimizations
+    2. Set up automated performance testing
+    3. Configure advanced monitoring and alerting
+    4. Schedule regular performance reviews
+    EOF
+        
+        log "Performance report generated: ${report_file}"
+    }
+    
+    # Main execution
+    main() {
+        case "${1:-}" in
+            "resources")
+                optimize_resources
+                ;;
+            "network")
+                optimize_network
+                ;;
+            "storage")
+                optimize_storage
+                ;;
+            "application")
+                tune_application
+                ;;
+            "report")
+                generate_performance_report
+                ;;
+            "all"|"")
+                optimize_resources
+                optimize_network
+                optimize_storage
+                tune_application
+                generate_performance_report
+                ;;
+            *)
+                echo "Usage: $0 {resources|network|storage|application|report|all}"
+                exit 1
+                ;;
+        esac
+        
+        log "Performance optimization completed"
+    }
+    
+    # Execute main function
+    main "$@"
+
+  autoscaling-config.yaml: |
+    # Horizontal Pod Autoscaler
+    apiVersion: autoscaling/v2
+    kind: HorizontalPodAutoscaler
+    metadata:
+      name: secure-app-hpa
+      namespace: devsecops-pipeline-production
+      labels:
+        app: secure-app
+        component: autoscaling
+        version: v1.0.0
+        managed-by: devsecops-pipeline
+        environment: production
+    spec:
+      scaleTargetRef:
+        apiVersion: apps/v1
+        kind: Deployment
+        name: secure-app
+      minReplicas: 3
+      maxReplicas: 20
+      metrics:
+      - type: Resource
+        resource:
+          name: cpu
+          target:
+            type: Utilization
+            averageUtilization: 70
+      - type: Resource
+        resource:
+          name: memory
+          target:
+            type: Utilization
+            averageUtilization: 80
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 300
+          policies:
+          - type: Percent
+            value: 50
+            periodSeconds: 60
+          - type: Pods
+            value: 2
+            periodSeconds: 60
+          selectPolicy: Min
+        scaleUp:
+          stabilizationWindowSeconds: 60
+          policies:
+          - type: Percent
+            value: 100
+            periodSeconds: 30
+          - type: Pods
+            value: 4
+            periodSeconds: 30
+          selectPolicy: Max
+    ---
+    # Vertical Pod Autoscaler
+    apiVersion: autoscaling.k8s.io/v1
+    kind: VerticalPodAutoscaler
+    metadata:
+      name: secure-app-vpa
+      namespace: devsecops-pipeline-production
+      labels:
+        app: secure-app
+        component: autoscaling
+        version: v1.0.0
+        managed-by: devsecops-pipeline
+        environment: production
+    spec:
+      targetRef:
+        apiVersion: apps/v1
+        kind: Deployment
+        name: secure-app
+      updatePolicy:
+        updateMode: "Auto"
+      resourcePolicy:
+        containerPolicies:
+        - containerName: secure-app
+          minAllowed:
+            cpu: 100m
+            memory: 128Mi
+          maxAllowed:
+            cpu: 2000m
+            memory: 4Gi
+          controlledResources: ["cpu", "memory"]
+          controlledValues: RequestsAndLimits
+
+  resource-quotas.yaml: |
+    apiVersion: v1
+    kind: ResourceQuota
+    metadata:
+      name: production-quota
+      namespace: devsecops-pipeline-production
+      labels:
+        app: secure-app
+        component: resource-management
+        version: v1.0.0
+        managed-by: devsecops-pipeline
+        environment: production
+    spec:
+      hard:
+        # Compute Resources
+        requests.cpu: "20"
+        requests.memory: 40Gi
+        requests.storage: 100Gi
+        limits.cpu: "40"
+        limits.memory: 80Gi
+        
+        # Object Counts
+        persistentvolumeclaims: "20"
+        services: "10"
+        secrets: "30"
+        configmaps: "30"
+        pods: "50"
+        
+        # Storage
+        requests.storage: 100Gi
+        gp3-encrypted.storageclass.storage.k8s.io/requests.storage: 100Gi
+    ---
+    apiVersion: v1
+    kind: LimitRange
+    metadata:
+      name: production-limits
+      namespace: devsecops-pipeline-production
+      labels:
+        app: secure-app
+        component: resource-management
+        version: v1.0.0
+        managed-by: devsecops-pipeline
+        environment: production
+    spec:
+      limits:
+      # Container limits
+      - type: Container
+        default:
+          cpu: 500m
+          memory: 1Gi
+          ephemeral-storage: 2Gi
+        defaultRequest:
+          cpu: 100m
+          memory: 256Mi
+          ephemeral-storage: 1Gi
+        max:
+          cpu: 4000m
+          memory: 8Gi
+          ephemeral-storage: 10Gi
+        min:
+          cpu: 50m
+          memory: 64Mi
+          ephemeral-storage: 500Mi
+      
+      # Pod limits
+      - type: Pod
+        max:
+          cpu: 8000m
+          memory: 16Gi
+          ephemeral-storage: 20Gi
+        min:
+          cpu: 100m
+          memory: 128Mi
+          ephemeral-storage: 1Gi
+      
+      # PVC limits
+      - type: PersistentVolumeClaim
+        max:
+          storage: 50Gi
+        min:
+          storage: 1Gi
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: performance-optimization
+  namespace: devsecops-pipeline-production
+  labels:
+    app: secure-app
+    component: performance
+    version: v1.0.0
+    managed-by: devsecops-pipeline
+    environment: production
+  annotations:
+    security.policy/reviewed-by: "performance-team"
+    security.policy/review-date: "2025-01-01"
+spec:
+  schedule: "0 3 * * 0"  # Weekly on Sunday at 3 AM
+  timeZone: "UTC"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app: secure-app
+            component: performance
+            version: v1.0.0
+            managed-by: devsecops-pipeline
+            environment: production
+        spec:
+          serviceAccountName: performance-service-account
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 3000
+            fsGroup: 2000
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+          - name: performance-optimization
+            image: alpine/k8s:1.24.0
+            imagePullPolicy: IfNotPresent
+            command:
+            - /bin/sh
+            - /performance-config/performance-tuning.sh
+            - all
+            securityContext:
+              allowPrivilegeEscalation: false
+              runAsNonRoot: true
+              runAsUser: 1000
+              runAsGroup: 3000
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop:
+                - ALL
+              seccompProfile:
+                type: RuntimeDefault
+            resources:
+              requests:
+                memory: "128Mi"
+                cpu: "100m"
+                ephemeral-storage: "1Gi"
+              limits:
+                memory: "256Mi"
+                cpu: "200m"
+                ephemeral-storage: "2Gi"
+            volumeMounts:
+            - name: performance-config
+              mountPath: /performance-config
+              readOnly: true
+            - name: performance-reports
+              mountPath: /tmp
+          volumes:
+          - name: performance-config
+            configMap:
+              name: performance-optimization-config
+              defaultMode: 0755
+          - name: performance-reports
+            persistentVolumeClaim:
+              claimName: performance-pvc
+          restartPolicy: OnFailure
+          terminationGracePeriodSeconds: 30
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: performance-pvc
+  namespace: devsecops-pipeline-production
+  labels:
+    app: secure-app
+    component: performance
+    version: v1.0.0
+    managed-by: devsecops-pipeline
+    environment: production
+  annotations:
+    security.policy/reviewed-by: "performance-team"
+    security.policy/review-date: "2025-01-01"
+    encrypted: "true"
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+  storageClassName: gp3-encrypted
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: performance-service-account
+  namespace: devsecops-pipeline-production
+  labels:
+    app: secure-app
+    component: performance
+    version: v1.0.0
+    managed-by: devsecops-pipeline
+    environment: production
+  annotations:
+    security.policy/reviewed-by: "performance-team"
+    security.policy/review-date: "2025-01-01"
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: performance-role
+  namespace: devsecops-pipeline-production
+  labels:
+    app: secure-app
+    component: performance
+    version: v1.0.0
+    managed-by: devsecops-pipeline
+    environment: production
+rules:
+- apiGroups: [""]
+  resources: ["pods", "services", "endpoints", "persistentvolumeclaims", "configmaps"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "statefulsets", "replicasets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["autoscaling"]
+  resources: ["horizontalpodautoscalers"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["metrics.k8s.io"]
+  resources: ["pods", "nodes"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: performance-role-binding
+  namespace: devsecops-pipeline-production
+  labels:
+    app: secure-app
+    component: performance
+    version: v1.0.0
+    managed-by: devsecops-pipeline
+    environment: production
+subjects:
+- kind: ServiceAccount
+  name: performance-service-account
+  namespace: devsecops-pipeline-production
+roleRef:
+  kind: Role
+  name: performance-role
+  apiGroup: rbac.authorization.k8s.io
