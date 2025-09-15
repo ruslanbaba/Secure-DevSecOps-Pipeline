@@ -1,0 +1,231 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-cm
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: argocd-cm
+    app.kubernetes.io/part-of: argocd
+data:
+  # Application instance label key
+  application.instanceLabelKey: argocd.argoproj.io/instance
+  
+  # Server configuration
+  server.insecure: "false"
+  server.grpc.web: "true"
+  server.enable.proxy.extension: "true"
+  
+  # Repository configuration
+  repositories: |
+    - type: git
+      url: https://github.com/ruslanbaba/Secure-DevSecOps-Pipeline
+      name: devsecops-main
+      project: devsecops-project
+    - type: helm
+      url: https://prometheus-community.github.io/helm-charts
+      name: prometheus-community
+    - type: helm
+      url: https://grafana.github.io/helm-charts
+      name: grafana
+    - type: helm
+      url: https://charts.bitnami.com/bitnami
+      name: bitnami
+  
+  # Repository credentials template
+  repository.credentials: |
+    - url: https://github.com/ruslanbaba
+      passwordSecret:
+        name: github-token
+        key: token
+      usernameSecret:
+        name: github-token
+        key: username
+  
+  # OIDC configuration for SSO
+  oidc.config: |
+    name: GitHub
+    issuer: https://api.github.com
+    clientId: $github-oauth-client-id
+    clientSecret: $github-oauth-client-secret
+    requestedScopes: ["user:email", "read:org"]
+    requestedIDTokenClaims: {"groups": {"essential": true}}
+  
+  # User management
+  accounts.admin: apiKey,login
+  accounts.developer: login
+  accounts.viewer: login
+  
+  # Policy configuration for RBAC
+  policy.default: role:readonly
+  policy.csv: |
+    # Global policies
+    p, role:admin, applications, *, */*, allow
+    p, role:admin, clusters, *, *, allow
+    p, role:admin, repositories, *, *, allow
+    p, role:admin, certificates, *, *, allow
+    p, role:admin, projects, *, *, allow
+    p, role:admin, accounts, *, *, allow
+    p, role:admin, gpgkeys, *, *, allow
+    p, role:admin, logs, get, *, allow
+    p, role:admin, exec, create, */*, allow
+    
+    # Developer policies
+    p, role:developer, applications, get, */*, allow
+    p, role:developer, applications, sync, */*, allow
+    p, role:developer, applications, action/*, *, */*, allow
+    p, role:developer, repositories, get, *, allow
+    p, role:developer, certificates, get, *, allow
+    p, role:developer, logs, get, *, allow
+    
+    # Readonly policies
+    p, role:readonly, applications, get, */*, allow
+    p, role:readonly, repositories, get, *, allow
+    p, role:readonly, certificates, get, *, allow
+    p, role:readonly, logs, get, *, allow
+    
+    # Group mappings
+    g, devsecops-admins, role:admin
+    g, devsecops-developers, role:developer
+    g, devsecops-viewers, role:readonly
+    
+    # GitHub team mappings
+    g, github:ruslanbaba:admins, role:admin
+    g, github:ruslanbaba:developers, role:developer
+    g, github:ruslanbaba:viewers, role:readonly
+  
+  # Global application settings
+  application.globalProjects: devsecops-project
+  
+  # Resource customizations
+  resource.customizations: |
+    networking.k8s.io/Ingress:
+      health.lua: |
+        hs = {}
+        hs.status = "Healthy"
+        return hs
+    
+    argoproj.io/Application:
+      health.lua: |
+        hs = {}
+        if obj.status ~= nil then
+          if obj.status.health ~= nil then
+            hs.status = obj.status.health.status
+            if obj.status.health.message ~= nil then
+              hs.message = obj.status.health.message
+            end
+          end
+        end
+        return hs
+  
+  # Resource exclusions
+  resource.exclusions: |
+    - apiGroups:
+      - tekton.dev
+      kinds:
+      - TaskRun
+      - PipelineRun
+    - apiGroups:
+      - networking.istio.io
+      kinds:
+      - VirtualService
+      clusters:
+      - https://istio-system.svc
+  
+  # Health check configuration
+  resource.customizations.health.argoproj.io_Application: |
+    hs = {}
+    hs.status = "Progressing"
+    hs.message = ""
+    if obj.status ~= nil then
+      if obj.status.health ~= nil then
+        hs.status = obj.status.health.status
+        if obj.status.health.message ~= nil then
+          hs.message = obj.status.health.message
+        end
+      end
+    end
+    return hs
+  
+  # Tracking configuration
+  application.resourceTrackingMethod: annotation+label
+  
+  # Sync timeout
+  timeout.hard.reconciliation: 0
+  timeout.reconciliation: 180s
+  
+  # Application operation processor settings
+  controller.operation.processors: 10
+  controller.self.heal.timeout.seconds: 5
+  controller.repo.server.timeout.seconds: 60
+  
+  # Notification settings
+  notifications.controller.enabled: "true"
+  
+  # Git submodule support
+  reposerver.enable.git.submodule: "true"
+  
+  # Security scanning
+  scanner.sonarqube.enabled: "true"
+  scanner.sonarqube.url: "https://sonarqube.example.com"
+  
+  # Metrics
+  server.metrics.enabled: "true"
+  controller.metrics.enabled: "true"
+  reposerver.metrics.enabled: "true"
+  
+  # Logging configuration
+  server.log.level: "info"
+  controller.log.level: "info"
+  reposerver.log.level: "info"
+  
+  # TLS configuration
+  server.tls.config: |
+    ciphers: ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-CHACHA20-POLY1305
+    minVersion: "1.2"
+    maxVersion: "1.3"
+  
+  # Webhook configuration
+  webhook.github.secret: github-webhook-secret
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-cmd-params-cm
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: argocd-cmd-params-cm
+    app.kubernetes.io/part-of: argocd
+data:
+  # Server command line parameters
+  server.insecure: "false"
+  server.port: "8080"
+  server.metrics.port: "8083"
+  server.grpc.port: "443"
+  server.grpc.web: "true"
+  server.grpc.web.root.path: "/"
+  server.static.assets: "/shared/app"
+  
+  # Controller command line parameters
+  controller.operation.processors: "10"
+  controller.self.heal.timeout.seconds: "5"
+  controller.status.processors: "20"
+  controller.repo.server.timeout.seconds: "60"
+  controller.app.resync: "180"
+  controller.repo.server.plaintext: "false"
+  controller.repo.server.strict.tls: "true"
+  
+  # Repository server command line parameters
+  reposerver.parallelism.limit: "0"
+  reposerver.listen.port: "8081"
+  reposerver.metrics.port: "8084"
+  reposerver.plugin.tar.exclusions: "*.so"
+  
+  # Application set controller parameters
+  applicationsetcontroller.policy: "sync"
+  applicationsetcontroller.enable.leader.election: "false"
+  applicationsetcontroller.namespace: "argocd"
+  applicationsetcontroller.dryrun: "false"
+  
+  # Notification controller parameters
+  notificationscontroller.selfservice.enabled: "false"

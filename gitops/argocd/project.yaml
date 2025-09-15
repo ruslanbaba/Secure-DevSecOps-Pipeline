@@ -1,0 +1,183 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: devsecops-project
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: devsecops-project
+    app.kubernetes.io/component: project
+    app.kubernetes.io/part-of: devsecops-pipeline
+    app.kubernetes.io/managed-by: argocd
+  annotations:
+    argocd.argoproj.io/project-description: "Secure DevSecOps Pipeline Project"
+spec:
+  description: "Project for managing DevSecOps pipeline applications with security controls"
+  
+  # Source repositories that applications in this project can pull from
+  sourceRepos:
+    - 'https://github.com/ruslanbaba/Secure-DevSecOps-Pipeline'
+    - 'https://github.com/ruslanbaba/Secure-DevSecOps-Pipeline.git'
+    - 'https://helm.elastic.co'
+    - 'https://prometheus-community.github.io/helm-charts'
+    - 'https://grafana.github.io/helm-charts'
+    - 'https://charts.bitnami.com/bitnami'
+  
+  # Destination clusters and namespaces where applications can be deployed
+  destinations:
+    - namespace: 'devsecops-*'
+      server: https://kubernetes.default.svc
+    - namespace: 'monitoring'
+      server: https://kubernetes.default.svc
+    - namespace: 'security'
+      server: https://kubernetes.default.svc
+    - namespace: 'kube-system'
+      server: https://kubernetes.default.svc
+      name: 'in-cluster'
+  
+  # Cluster roles which can be used in this project
+  clusterResourceWhitelist:
+    - group: ''
+      kind: Namespace
+    - group: 'rbac.authorization.k8s.io'
+      kind: ClusterRole
+    - group: 'rbac.authorization.k8s.io'
+      kind: ClusterRoleBinding
+    - group: 'security.istio.io'
+      kind: PeerAuthentication
+    - group: 'networking.istio.io'
+      kind: VirtualService
+    - group: 'networking.istio.io'
+      kind: DestinationRule
+    - group: 'config.gatekeeper.sh'
+      kind: Config
+    - group: 'templates.gatekeeper.sh'
+      kind: ConstraintTemplate
+    - group: 'apiextensions.k8s.io'
+      kind: CustomResourceDefinition
+    - group: 'admissionregistration.k8s.io'
+      kind: ValidatingAdmissionWebhook
+    - group: 'admissionregistration.k8s.io'
+      kind: MutatingAdmissionWebhook
+  
+  # Namespace-scoped resources which can be used in this project
+  namespaceResourceWhitelist:
+    - group: ''
+      kind: ConfigMap
+    - group: ''
+      kind: Secret
+    - group: ''
+      kind: Service
+    - group: ''
+      kind: ServiceAccount
+    - group: ''
+      kind: PersistentVolumeClaim
+    - group: 'apps'
+      kind: Deployment
+    - group: 'apps'
+      kind: StatefulSet
+    - group: 'apps'
+      kind: DaemonSet
+    - group: 'batch'
+      kind: Job
+    - group: 'batch'
+      kind: CronJob
+    - group: 'networking.k8s.io'
+      kind: NetworkPolicy
+    - group: 'networking.k8s.io'
+      kind: Ingress
+    - group: 'policy'
+      kind: PodSecurityPolicy
+    - group: 'policy'
+      kind: PodDisruptionBudget
+    - group: 'rbac.authorization.k8s.io'
+      kind: Role
+    - group: 'rbac.authorization.k8s.io'
+      kind: RoleBinding
+    - group: 'autoscaling'
+      kind: HorizontalPodAutoscaler
+    - group: 'monitoring.coreos.com'
+      kind: ServiceMonitor
+    - group: 'monitoring.coreos.com'
+      kind: PrometheusRule
+    - group: 'security.istio.io'
+      kind: AuthorizationPolicy
+  
+  # Deny certain resources for security
+  namespaceResourceBlacklist:
+    - group: ''
+      kind: Pod  # Prevent direct pod creation
+    - group: 'extensions'
+      kind: Deployment  # Use apps/v1 instead
+  
+  # Roles associated with the project
+  roles:
+    # Developer role - limited permissions
+    - name: developer
+      description: "Developer access to deploy applications"
+      policies:
+        - p, proj:devsecops-project:developer, applications, get, devsecops-project/*, allow
+        - p, proj:devsecops-project:developer, applications, sync, devsecops-project/*, allow
+        - p, proj:devsecops-project:developer, repositories, get, *, allow
+        - p, proj:devsecops-project:developer, logs, get, devsecops-project/*, allow
+      groups:
+        - devsecops-developers
+        - github:ruslanbaba/developers
+    
+    # Admin role - full permissions
+    - name: admin
+      description: "Full administrative access"
+      policies:
+        - p, proj:devsecops-project:admin, applications, *, devsecops-project/*, allow
+        - p, proj:devsecops-project:admin, repositories, *, *, allow
+        - p, proj:devsecops-project:admin, clusters, *, *, allow
+        - p, proj:devsecops-project:admin, exec, create, devsecops-project/*, allow
+      groups:
+        - devsecops-admins
+        - github:ruslanbaba/admins
+    
+    # Read-only role for monitoring
+    - name: readonly
+      description: "Read-only access for monitoring and auditing"
+      policies:
+        - p, proj:devsecops-project:readonly, applications, get, devsecops-project/*, allow
+        - p, proj:devsecops-project:readonly, logs, get, devsecops-project/*, allow
+        - p, proj:devsecops-project:readonly, repositories, get, *, allow
+      groups:
+        - devsecops-viewers
+        - monitoring-team
+  
+  # Signature keys for verifying commits
+  signatureKeys:
+    - keyID: "4AEE18F83AFDEB23"  # Example GPG key ID
+  
+  # Additional security policies
+  orphanedResources:
+    warn: true
+    ignore:
+      - group: ''
+        kind: Secret
+        name: argocd-secret
+      - group: ''
+        kind: ConfigMap
+        name: argocd-cm
+  
+  # Sync windows for controlled deployments
+  syncWindows:
+    - kind: allow
+      schedule: '0 8-18 * * 1-5'  # Allow sync during business hours weekdays
+      duration: 10h
+      applications:
+        - 'secure-devsecops-app'
+      manualSync: true
+    - kind: deny
+      schedule: '0 18-8 * * *'    # Deny sync during off hours
+      duration: 14h
+      applications:
+        - 'secure-devsecops-app'
+      manualSync: false
+    - kind: allow
+      schedule: '0 0-23 * * 6-7'  # Allow weekend deployments for staging
+      duration: 24h
+      namespaces:
+        - 'devsecops-staging'
+      manualSync: true

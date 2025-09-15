@@ -1,0 +1,240 @@
+apiVersion: velero.io/v1
+kind: Schedule
+metadata:
+  name: daily-backup
+  namespace: velero
+  labels:
+    app.kubernetes.io/name: velero
+    app.kubernetes.io/component: backup
+    backup.type: daily
+spec:
+  # Run daily at 2 AM UTC
+  schedule: "0 2 * * *"
+  template:
+    metadata:
+      labels:
+        backup.type: daily
+        environment: all
+    spec:
+      # Include all namespaces except system ones
+      includedNamespaces:
+      - devsecops-production
+      - devsecops-staging
+      - devsecops-development
+      - monitoring
+      - security
+      
+      # Exclude system namespaces and temporary data
+      excludedNamespaces:
+      - kube-system
+      - kube-public
+      - kube-node-lease
+      - velero
+      - argocd
+      
+      # Include cluster-scoped resources
+      includeClusterResources: true
+      
+      # Storage location
+      storageLocation: default
+      volumeSnapshotLocations:
+      - default
+      
+      # Retention policy - keep for 30 days
+      ttl: 720h0m0s
+      
+      # Hooks for application-consistent backups
+      hooks:
+        resources:
+        - name: postgres-backup-hook
+          includedNamespaces:
+          - devsecops-production
+          - devsecops-staging
+          includedResources:
+          - pods
+          labelSelector:
+            matchLabels:
+              app: postgresql
+          pre:
+          - exec:
+              container: postgresql
+              command:
+              - /bin/bash
+              - -c
+              - "PGPASSWORD=$POSTGRES_PASSWORD pg_dump -U $POSTGRES_USER -h localhost $POSTGRES_DB > /tmp/backup.sql"
+              onError: Continue
+              timeout: 3m
+          post:
+          - exec:
+              container: postgresql
+              command:
+              - /bin/bash
+              - -c
+              - "rm -f /tmp/backup.sql"
+              onError: Continue
+              timeout: 1m
+        
+        - name: redis-backup-hook
+          includedNamespaces:
+          - devsecops-production
+          - devsecops-staging
+          includedResources:
+          - pods
+          labelSelector:
+            matchLabels:
+              app: redis
+          pre:
+          - exec:
+              container: redis
+              command:
+              - redis-cli
+              - BGSAVE
+              onError: Continue
+              timeout: 2m
+      
+      # Snapshot volumes
+      snapshotVolumes: true
+      defaultVolumesToRestic: false
+      
+      # Ordered resources for proper restoration
+      orderedResources:
+        namespaces: ""
+        persistentvolumeclaims: ""
+        persistentvolumes: ""
+        secrets: ""
+        configmaps: ""
+        serviceaccounts: ""
+        services: ""
+        deployments: "apps/v1"
+        replicasets: "apps/v1"
+        pods: ""
+
+---
+apiVersion: velero.io/v1
+kind: Schedule
+metadata:
+  name: weekly-backup
+  namespace: velero
+  labels:
+    app.kubernetes.io/name: velero
+    app.kubernetes.io/component: backup
+    backup.type: weekly
+spec:
+  # Run weekly on Sunday at 1 AM UTC
+  schedule: "0 1 * * 0"
+  template:
+    metadata:
+      labels:
+        backup.type: weekly
+        environment: all
+    spec:
+      # Full cluster backup including system namespaces
+      includedNamespaces: []  # All namespaces
+      excludedNamespaces:
+      - velero  # Don't backup velero itself
+      
+      includeClusterResources: true
+      storageLocation: default
+      volumeSnapshotLocations:
+      - default
+      
+      # Keep weekly backups for 3 months
+      ttl: 2160h0m0s  # 90 days
+      
+      snapshotVolumes: true
+      defaultVolumesToRestic: true
+
+---
+apiVersion: velero.io/v1
+kind: Schedule
+metadata:
+  name: production-critical-backup
+  namespace: velero
+  labels:
+    app.kubernetes.io/name: velero
+    app.kubernetes.io/component: backup
+    backup.type: critical
+spec:
+  # Run every 4 hours for production critical data
+  schedule: "0 */4 * * *"
+  template:
+    metadata:
+      labels:
+        backup.type: critical
+        environment: production
+    spec:
+      includedNamespaces:
+      - devsecops-production
+      
+      # Only backup critical resources
+      includedResources:
+      - persistentvolumeclaims
+      - persistentvolumes
+      - secrets
+      - configmaps
+      - deployments
+      - services
+      
+      includeClusterResources: false
+      storageLocation: default
+      volumeSnapshotLocations:
+      - default
+      
+      # Keep critical backups for 7 days
+      ttl: 168h0m0s
+      
+      # Label selector for critical workloads
+      labelSelector:
+        matchExpressions:
+        - key: backup.critical
+          operator: In
+          values: ["true", "required"]
+      
+      snapshotVolumes: true
+      defaultVolumesToRestic: false
+
+---
+apiVersion: velero.io/v1
+kind: Schedule
+metadata:
+  name: configuration-backup
+  namespace: velero
+  labels:
+    app.kubernetes.io/name: velero
+    app.kubernetes.io/component: backup
+    backup.type: configuration
+spec:
+  # Run twice daily for configuration backup
+  schedule: "0 6,18 * * *"
+  template:
+    metadata:
+      labels:
+        backup.type: configuration
+        environment: all
+    spec:
+      includedNamespaces: []  # All namespaces
+      
+      # Only configuration resources
+      includedResources:
+      - configmaps
+      - secrets
+      - customresourcedefinitions
+      - clusterroles
+      - clusterrolebindings
+      - roles
+      - rolebindings
+      - serviceaccounts
+      - networkpolicies
+      - podsecuritypolicies
+      - validatingadmissionwebhooks
+      - mutatingadmissionwebhooks
+      
+      includeClusterResources: true
+      storageLocation: default
+      
+      # Keep configuration backups for 60 days
+      ttl: 1440h0m0s
+      
+      # Exclude volume snapshots for config-only backup
+      snapshotVolumes: false
+      defaultVolumesToRestic: false

@@ -1,0 +1,202 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: velero
+  namespace: velero
+  labels:
+    app.kubernetes.io/name: velero
+    app.kubernetes.io/component: backup
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: velero
+  labels:
+    app.kubernetes.io/name: velero
+    app.kubernetes.io/component: backup
+subjects:
+- kind: ServiceAccount
+  namespace: velero
+  name: velero
+roleRef:
+  kind: ClusterRole
+  name: cluster-admin
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cloud-credentials
+  namespace: velero
+  labels:
+    app.kubernetes.io/name: velero
+    app.kubernetes.io/component: backup
+type: Opaque
+data:
+  # AWS credentials (base64 encoded)
+  # Replace with actual credentials
+  cloud: |
+    W2RlZmF1bHRdCmF3c19hY2Nlc3Nfa2V5X2lkID0gWU9VUl9BQ0NFU1NfS0VZX0lECmF3c19zZWNy
+    ZXRfYWNjZXNzX2tleSA9IFlPVVJfU0VDUkVUX0FDQ0VTU19LRVk=
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: velero
+  namespace: velero
+  labels:
+    app.kubernetes.io/name: velero
+    app.kubernetes.io/component: backup
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: velero
+      app.kubernetes.io/component: backup
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: velero
+        app.kubernetes.io/component: backup
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8085"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: velero
+      restartPolicy: Always
+      containers:
+      - name: velero
+        image: velero/velero:v1.12.0
+        ports:
+        - name: metrics
+          containerPort: 8085
+        command:
+          - /velero
+        args:
+          - server
+          - --log-level=info
+          - --log-format=json
+          - --metrics-bind-address=:8085
+          - --plugin-dir=/plugins
+          - --backup-sync-period=60m
+          - --fs-backup-timeout=240m
+          - --default-backup-storage-location=default
+          - --default-volume-snapshot-locations=default
+          - --store-validation-frequency=168h
+          - --uploader-type=restic
+        env:
+        - name: VELERO_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: LD_LIBRARY_PATH
+          value: /plugins
+        - name: VELERO_SCRATCH_DIR
+          value: /scratch
+        - name: AWS_SHARED_CREDENTIALS_FILE
+          value: /credentials/cloud
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        volumeMounts:
+        - name: credentials
+          mountPath: /credentials
+          readOnly: true
+        - name: plugins
+          mountPath: /plugins
+        - name: scratch
+          mountPath: /scratch
+        livenessProbe:
+          httpGet:
+            path: /metrics
+            port: 8085
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /metrics
+            port: 8085
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+      volumes:
+      - name: credentials
+        secret:
+          secretName: cloud-credentials
+      - name: plugins
+        emptyDir: {}
+      - name: scratch
+        emptyDir: {}
+      initContainers:
+      - name: velero-plugin-for-aws
+        image: velero/velero-plugin-for-aws:v1.8.0
+        imagePullPolicy: IfNotPresent
+        volumeMounts:
+        - mountPath: /target
+          name: plugins
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 2000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: velero-metrics
+  namespace: velero
+  labels:
+    app.kubernetes.io/name: velero
+    app.kubernetes.io/component: backup
+spec:
+  ports:
+  - name: metrics
+    port: 8085
+    targetPort: metrics
+  selector:
+    app.kubernetes.io/name: velero
+    app.kubernetes.io/component: backup
+---
+apiVersion: velero.io/v1
+kind: BackupStorageLocation
+metadata:
+  name: default
+  namespace: velero
+  labels:
+    app.kubernetes.io/name: velero
+    app.kubernetes.io/component: backup
+spec:
+  provider: aws
+  default: true
+  objectStorage:
+    bucket: devsecops-velero-backups
+    prefix: cluster-backups
+  config:
+    region: us-west-2
+    s3ForcePathStyle: "false"
+    s3Url: https://s3.us-west-2.amazonaws.com
+    kmsKeyId: "arn:aws:kms:us-west-2:123456789012:key/12345678-1234-1234-1234-123456789012"
+    serverSideEncryption: "AES256"
+---
+apiVersion: velero.io/v1
+kind: VolumeSnapshotLocation
+metadata:
+  name: default
+  namespace: velero
+  labels:
+    app.kubernetes.io/name: velero
+    app.kubernetes.io/component: backup
+spec:
+  provider: aws
+  config:
+    region: us-west-2
+    # Enable cross-region snapshot copying for DR
+    enableCrossRegionReplication: "true"
+    replicationRegions: "us-east-1,eu-west-1"

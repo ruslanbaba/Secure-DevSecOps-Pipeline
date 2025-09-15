@@ -1,0 +1,44 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: devsecops-production
+  labels:
+    name: devsecops-production
+    environment: production
+    tier: production
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+  annotations:
+    gitops.argoproj.io/managed: "true"
+    security.compliance.required: "true"
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: devsecops-staging
+  labels:
+    name: devsecops-staging
+    environment: staging
+    tier: non-production
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+  annotations:
+    gitops.argoproj.io/managed: "true"
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: devsecops-development
+  labels:
+    name: devsecops-development
+    environment: development
+    tier: non-production
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+  annotations:
+    gitops.argoproj.io/managed: "true"

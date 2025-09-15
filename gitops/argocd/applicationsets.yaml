@@ -1,0 +1,310 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: devsecops-environments
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: devsecops-environments
+    app.kubernetes.io/component: applicationset
+    app.kubernetes.io/part-of: devsecops-pipeline
+    app.kubernetes.io/managed-by: argocd
+spec:
+  generators:
+  # Git generator for environment-based deployments
+  - git:
+      repoURL: https://github.com/ruslanbaba/Secure-DevSecOps-Pipeline
+      revision: HEAD
+      directories:
+      - path: k8s/overlays/*
+      template:
+        metadata:
+          name: '{{path.basename}}-devsecops-app'
+          labels:
+            environment: '{{path.basename}}'
+        spec:
+          project: devsecops-project
+          source:
+            repoURL: https://github.com/ruslanbaba/Secure-DevSecOps-Pipeline
+            targetRevision: '{{path.basename == "production" | ternary "main" "develop"}}'
+            path: '{{path}}'
+          destination:
+            server: https://kubernetes.default.svc
+            namespace: 'devsecops-{{path.basename}}'
+          syncPolicy:
+            automated:
+              prune: true
+              selfHeal: '{{path.basename == "production" | ternary false true}}'
+            syncOptions:
+              - CreateNamespace=true
+              - ServerSideApply=true
+            retry:
+              limit: '{{path.basename == "production" | ternary 3 5}}'
+              backoff:
+                duration: 5s
+                factor: 2
+                maxDuration: '{{path.basename == "production" | ternary "2m" "1m"}}'
+  
+  # Cluster generator for multi-cluster deployments
+  - clusters:
+      selector:
+        matchLabels:
+          environment: production
+      template:
+        metadata:
+          name: '{{name}}-devsecops-app'
+          labels:
+            cluster: '{{name}}'
+            environment: production
+        spec:
+          project: devsecops-project
+          source:
+            repoURL: https://github.com/ruslanbaba/Secure-DevSecOps-Pipeline
+            targetRevision: main
+            path: k8s/overlays/production
+            kustomize:
+              patches:
+              - patch: |
+                  apiVersion: apps/v1
+                  kind: Deployment
+                  metadata:
+                    name: secure-app
+                  spec:
+                    template:
+                      metadata:
+                        annotations:
+                          cluster: '{{name}}'
+                target:
+                  kind: Deployment
+                  name: secure-app
+          destination:
+            server: '{{server}}'
+            namespace: devsecops-production
+          syncPolicy:
+            automated:
+              prune: true
+              selfHeal: false
+            syncOptions:
+              - CreateNamespace=true
+              - ServerSideApply=true
+            retry:
+              limit: 3
+              backoff:
+                duration: 10s
+                factor: 2
+                maxDuration: 3m
+  
+  # Matrix generator for feature branch deployments
+  - matrix:
+      generators:
+      - git:
+          repoURL: https://github.com/ruslanbaba/Secure-DevSecOps-Pipeline
+          revision: HEAD
+          branches:
+          - feature/*
+          - bugfix/*
+          - hotfix/*
+      - list:
+          elements:
+          - cluster: dev-cluster
+            namespace: feature-testing
+          - cluster: staging-cluster
+            namespace: feature-staging
+      template:
+        metadata:
+          name: '{{branch}}-{{cluster}}-app'
+          labels:
+            branch: '{{branch}}'
+            cluster: '{{cluster}}'
+            environment: feature
+          annotations:
+            argocd.argoproj.io/sync-wave: "2"
+        spec:
+          project: devsecops-project
+          source:
+            repoURL: https://github.com/ruslanbaba/Secure-DevSecOps-Pipeline
+            targetRevision: '{{branch}}'
+            path: k8s/overlays/development
+            kustomize:
+              namePrefix: '{{branch | replace "/" "-"}}-'
+              patches:
+              - patch: |
+                  apiVersion: apps/v1
+                  kind: Deployment
+                  metadata:
+                    name: secure-app
+                  spec:
+                    replicas: 1
+                    template:
+                      metadata:
+                        annotations:
+                          branch: '{{branch}}'
+                target:
+                  kind: Deployment
+                  name: secure-app
+          destination:
+            server: '{{cluster}}'
+            namespace: '{{namespace}}'
+          syncPolicy:
+            automated:
+              prune: true
+              selfHeal: true
+            syncOptions:
+              - CreateNamespace=true
+              - ServerSideApply=true
+            retry:
+              limit: 2
+              backoff:
+                duration: 5s
+                factor: 2
+                maxDuration: 30s
+  
+  template:
+    metadata:
+      annotations:
+        argocd.argoproj.io/manifest-generate-paths: .
+        notifications.argoproj.io/subscribe.on-sync-succeeded.slack: devsecops-notifications
+        notifications.argoproj.io/subscribe.on-sync-failed.slack: devsecops-alerts
+    spec:
+      # Default values for all generated applications
+      revisionHistoryLimit: 5
+      
+      ignoreDifferences:
+      - group: apps
+        kind: Deployment
+        jsonPointers:
+        - /spec/replicas
+      - group: ""
+        kind: Secret
+        jsonPointers:
+        - /data
+      
+      info:
+      - name: 'Generated by'
+        value: 'ApplicationSet'
+      - name: 'Repository'
+        value: 'https://github.com/ruslanbaba/Secure-DevSecOps-Pipeline'
+
+---
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: devsecops-microservices
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: devsecops-microservices
+    app.kubernetes.io/component: applicationset
+    app.kubernetes.io/part-of: devsecops-pipeline
+    app.kubernetes.io/managed-by: argocd
+spec:
+  generators:
+  # Pull Request generator for preview environments
+  - pullRequest:
+      github:
+        owner: ruslanbaba
+        repo: Secure-DevSecOps-Pipeline
+        tokenRef:
+          secretName: github-token
+          key: token
+        labels:
+        - preview
+      template:
+        metadata:
+          name: 'pr-{{number}}-preview'
+          labels:
+            preview: "true"
+            pr-number: "{{number}}"
+          annotations:
+            argocd.argoproj.io/sync-wave: "3"
+        spec:
+          project: devsecops-project
+          source:
+            repoURL: https://github.com/ruslanbaba/Secure-DevSecOps-Pipeline
+            targetRevision: '{{head_sha}}'
+            path: k8s/overlays/development
+            kustomize:
+              namePrefix: 'pr-{{number}}-'
+              patches:
+              - patch: |
+                  apiVersion: v1
+                  kind: Service
+                  metadata:
+                    name: secure-app
+                  spec:
+                    type: LoadBalancer
+                target:
+                  kind: Service
+                  name: secure-app
+          destination:
+            server: https://kubernetes.default.svc
+            namespace: 'pr-{{number}}-preview'
+          syncPolicy:
+            automated:
+              prune: true
+              selfHeal: true
+            syncOptions:
+              - CreateNamespace=true
+              - ServerSideApply=true
+            retry:
+              limit: 3
+              backoff:
+                duration: 5s
+                factor: 2
+                maxDuration: 1m
+          info:
+          - name: 'Pull Request'
+            value: '{{title}}'
+          - name: 'Author'
+            value: '{{head_short_sha}} by {{author}}'
+          - name: 'Preview URL'
+            value: 'https://pr-{{number}}.preview.company.com'
+  
+  # List generator for different microservices
+  - list:
+      elements:
+      - service: auth-service
+        port: 8080
+        healthPath: /health
+        replicas: 2
+      - service: user-service
+        port: 8081
+        healthPath: /api/health
+        replicas: 3
+      - service: data-service
+        port: 8082
+        healthPath: /health
+        replicas: 2
+      - service: notification-service
+        port: 8083
+        healthPath: /status
+        replicas: 1
+      template:
+        metadata:
+          name: '{{service}}'
+          labels:
+            service: '{{service}}'
+            microservice: "true"
+        spec:
+          project: devsecops-project
+          source:
+            repoURL: https://github.com/ruslanbaba/Secure-DevSecOps-Pipeline
+            targetRevision: HEAD
+            path: services/{{service}}/k8s
+          destination:
+            server: https://kubernetes.default.svc
+            namespace: 'microservices'
+          syncPolicy:
+            automated:
+              prune: true
+              selfHeal: true
+            syncOptions:
+              - CreateNamespace=true
+              - ServerSideApply=true
+            retry:
+              limit: 5
+              backoff:
+                duration: 5s
+                factor: 2
+                maxDuration: 2m
+  
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]

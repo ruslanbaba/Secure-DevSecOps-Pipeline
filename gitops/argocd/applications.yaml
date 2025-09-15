@@ -1,0 +1,185 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: secure-devsecops-app
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: secure-devsecops-app
+    app.kubernetes.io/component: application
+    app.kubernetes.io/part-of: devsecops-pipeline
+    app.kubernetes.io/managed-by: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+    notifications.argoproj.io/subscribe.on-sync-succeeded.slack: devsecops-notifications
+    notifications.argoproj.io/subscribe.on-sync-failed.slack: devsecops-alerts
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: devsecops-project
+  
+  source:
+    repoURL: https://github.com/ruslanbaba/Secure-DevSecOps-Pipeline
+    targetRevision: HEAD
+    path: k8s/overlays/production
+    
+    # Kustomize configuration
+    kustomize:
+      buildOptions: "--enable-helm"
+      patches:
+        - patch: |
+            apiVersion: apps/v1
+            kind: Deployment
+            metadata:
+              name: secure-app
+            spec:
+              template:
+                metadata:
+                  annotations:
+                    deployment.timestamp: $ARGOCD_APP_REVISION
+          target:
+            kind: Deployment
+            name: secure-app
+  
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: devsecops-production
+  
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+      - ApplyOutOfSyncOnly=true
+      - RespectIgnoreDifferences=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+  
+  revisionHistoryLimit: 10
+  
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas
+    - group: ""
+      kind: Secret
+      jsonPointers:
+        - /data
+    - group: autoscaling
+      kind: HorizontalPodAutoscaler
+      jsonPointers:
+        - /spec/minReplicas
+        - /spec/maxReplicas
+  
+  info:
+    - name: 'Description'
+      value: 'Secure DevSecOps Pipeline Application'
+    - name: 'Repository'
+      value: 'https://github.com/ruslanbaba/Secure-DevSecOps-Pipeline'
+    - name: 'Environment'
+      value: 'Production'
+
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: secure-devsecops-monitoring
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: secure-devsecops-monitoring
+    app.kubernetes.io/component: monitoring
+    app.kubernetes.io/part-of: devsecops-pipeline
+    app.kubernetes.io/managed-by: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: devsecops-project
+  
+  source:
+    repoURL: https://github.com/ruslanbaba/Secure-DevSecOps-Pipeline
+    targetRevision: HEAD
+    path: monitoring
+  
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 3
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 1m
+  
+  revisionHistoryLimit: 5
+
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: secure-devsecops-security
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: secure-devsecops-security
+    app.kubernetes.io/component: security
+    app.kubernetes.io/part-of: devsecops-pipeline
+    app.kubernetes.io/managed-by: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  project: devsecops-project
+  
+  source:
+    repoURL: https://github.com/ruslanbaba/Secure-DevSecOps-Pipeline
+    targetRevision: HEAD
+    path: k8s/base
+    kustomize:
+      patches:
+        - patch: |
+            apiVersion: v1
+            kind: Namespace
+            metadata:
+              name: devsecops-production
+              labels:
+                pod-security.kubernetes.io/enforce: restricted
+                pod-security.kubernetes.io/audit: restricted
+                pod-security.kubernetes.io/warn: restricted
+          target:
+            kind: Namespace
+            name: devsecops-production
+  
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: devsecops-production
+  
+  syncPolicy:
+    automated:
+      prune: false  # Don't auto-prune security policies
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 3
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 2m
+  
+  revisionHistoryLimit: 10
