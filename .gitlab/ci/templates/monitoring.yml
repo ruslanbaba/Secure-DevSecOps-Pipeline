@@ -1,0 +1,306 @@
+# ==============================================================================
+# MONITORING TEMPLATES - Observability and SLO Management
+# ==============================================================================
+
+.monitoring_baseline: &monitoring_baseline
+  before_script:
+    - echo "📊 Initializing monitoring baseline..."
+    - |
+      # Install monitoring tools
+      apk add --no-cache curl jq bc
+      
+      # Verify monitoring endpoints
+      curl -f "${PROMETHEUS_URL}/api/v1/query?query=up" > /dev/null || {
+        echo "❌ Prometheus unreachable"
+        exit 1
+      }
+    - echo "✅ Monitoring tools ready"
+
+.slo_validation: &slo_validation
+  script:
+    - echo "📈 Validating SLOs"
+    - |
+      # Define SLO queries
+      AVAILABILITY_QUERY="avg_over_time(up{job=\"${CI_PROJECT_NAME}\"}[1h]) * 100"
+      LATENCY_P95_QUERY="histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{job=\"${CI_PROJECT_NAME}\"}[5m])) * 1000"
+      ERROR_RATE_QUERY="rate(http_requests_total{job=\"${CI_PROJECT_NAME}\",status=~\"5..\"}[5m]) * 100"
+      
+      # Query Prometheus
+      AVAILABILITY=$(curl -s "${PROMETHEUS_URL}/api/v1/query?query=${AVAILABILITY_QUERY}" | \
+        jq -r '.data.result[0].value[1] // "0"')
+      
+      LATENCY_P95=$(curl -s "${PROMETHEUS_URL}/api/v1/query?query=${LATENCY_P95_QUERY}" | \
+        jq -r '.data.result[0].value[1] // "0"')
+      
+      ERROR_RATE=$(curl -s "${PROMETHEUS_URL}/api/v1/query?query=${ERROR_RATE_QUERY}" | \
+        jq -r '.data.result[0].value[1] // "0"')
+      
+      echo "📊 Current SLI values:"
+      echo "  Availability: ${AVAILABILITY}%"
+      echo "  P95 Latency: ${LATENCY_P95}ms"
+      echo "  Error Rate: ${ERROR_RATE}%"
+      
+      # Validate against SLOs
+      if (( $(echo "$AVAILABILITY < $SLO_AVAILABILITY" | bc -l) )); then
+        echo "❌ Availability SLO violation: ${AVAILABILITY}% < ${SLO_AVAILABILITY}%"
+        exit 1
+      fi
+      
+      if (( $(echo "$LATENCY_P95 > ${SLO_LATENCY_P95%ms}" | bc -l) )); then
+        echo "❌ Latency SLO violation: ${LATENCY_P95}ms > ${SLO_LATENCY_P95}"
+        exit 1
+      fi
+      
+      if (( $(echo "$ERROR_RATE > ${SLO_ERROR_RATE%\%}" | bc -l) )); then
+        echo "❌ Error rate SLO violation: ${ERROR_RATE}% > ${SLO_ERROR_RATE}"
+        exit 1
+      fi
+      
+      echo "✅ All SLOs are met"
+
+# Performance monitoring template
+.performance_monitoring:
+  <<: *monitoring_baseline
+  stage: 📈 monitor-slo
+  script:
+    - echo "🔍 Running performance monitoring"
+    - |
+      # Load testing with k6
+      docker run --rm -v $(pwd)/tests/performance:/scripts \
+        loadimpact/k6:latest run \
+        --vus 50 --duration 5m \
+        --out json=performance-reports/k6-results.json \
+        /scripts/load-test.js
+    - |
+      # Analyze results
+      RESPONSE_TIME_P95=$(jq -r '.metrics.http_req_duration.values.p95' performance-reports/k6-results.json)
+      ERROR_RATE=$(jq -r '.metrics.http_req_failed.values.rate' performance-reports/k6-results.json)
+      
+      echo "📊 Performance Results:"
+      echo "  P95 Response Time: ${RESPONSE_TIME_P95}ms"
+      echo "  Error Rate: ${ERROR_RATE}%"
+      
+      # Generate performance report
+      python3 scripts/generate-performance-report.py \
+        --input performance-reports/k6-results.json \
+        --output performance-reports/performance-summary.json
+    - |
+      # Check performance thresholds
+      if (( $(echo "$RESPONSE_TIME_P95 > 1000" | bc -l) )); then
+        echo "❌ Performance degradation detected"
+        exit 1
+      fi
+    - echo "✅ Performance monitoring completed"
+  artifacts:
+    when: always
+    paths:
+      - performance-reports/
+    expire_in: 7 days
+
+# Synthetic monitoring template
+.synthetic_monitoring:
+  <<: *monitoring_baseline
+  stage: 📈 monitor-slo
+  script:
+    - echo "🤖 Running synthetic monitoring"
+    - |
+      # Health check monitoring
+      for endpoint in /health /ready /metrics; do
+        echo "Checking endpoint: ${endpoint}"
+        response=$(curl -s -o /dev/null -w "%{http_code},%{time_total}" \
+          "${APPLICATION_URL}${endpoint}")
+        
+        http_code=$(echo $response | cut -d',' -f1)
+        response_time=$(echo $response | cut -d',' -f2)
+        
+        if [ "$http_code" != "200" ]; then
+          echo "❌ Endpoint ${endpoint} returned ${http_code}"
+          exit 1
+        fi
+        
+        echo "✅ ${endpoint}: ${http_code} (${response_time}s)"
+      done
+    - |
+      # Business logic testing
+      python3 tests/synthetic/business-flow-test.py \
+        --base-url "${APPLICATION_URL}" \
+        --output synthetic-reports/business-flow.json
+    - echo "✅ Synthetic monitoring completed"
+  artifacts:
+    when: always
+    paths:
+      - synthetic-reports/
+    expire_in: 7 days
+
+# Security monitoring template
+.security_monitoring:
+  <<: *monitoring_baseline
+  stage: 📈 monitor-slo
+  script:
+    - echo "🛡️ Running security monitoring"
+    - |
+      # Check for security alerts
+      SECURITY_ALERTS=$(curl -s "${PROMETHEUS_URL}/api/v1/alerts" | \
+        jq -r '.data.alerts[] | select(.labels.severity == "critical" or .labels.severity == "high") | .labels.alertname' | \
+        wc -l)
+      
+      if [ "$SECURITY_ALERTS" -gt 0 ]; then
+        echo "❌ ${SECURITY_ALERTS} critical/high security alerts detected"
+        exit 1
+      fi
+    - |
+      # Runtime security monitoring
+      docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+        falcosecurity/falco:latest \
+        --rule=/etc/falco/falco_rules.yaml \
+        --validate-rules
+    - |
+      # Network policy violations
+      kubectl get events -n ${NAMESPACE} \
+        --field-selector reason=NetworkPolicyViolation \
+        --output json > security-reports/network-violations.json
+      
+      VIOLATIONS=$(jq '.items | length' security-reports/network-violations.json)
+      if [ "$VIOLATIONS" -gt 0 ]; then
+        echo "⚠️ ${VIOLATIONS} network policy violations detected"
+      fi
+    - echo "✅ Security monitoring completed"
+  artifacts:
+    when: always
+    paths:
+      - security-reports/
+    expire_in: 7 days
+
+# Alerting configuration template
+.alerting_setup:
+  <<: *monitoring_baseline
+  stage: 📊 monitor-slo
+  script:
+    - echo "🚨 Setting up alerting rules"
+    - |
+      # Deploy Prometheus alerting rules
+      kubectl apply -f - <<EOF
+      apiVersion: monitoring.coreos.com/v1
+      kind: PrometheusRule
+      metadata:
+        name: ${CI_PROJECT_NAME}-alerts
+        namespace: ${NAMESPACE}
+        labels:
+          app: ${CI_PROJECT_NAME}
+          prometheus: kube-prometheus
+      spec:
+        groups:
+        - name: ${CI_PROJECT_NAME}.rules
+          rules:
+          - alert: HighErrorRate
+            expr: rate(http_requests_total{job="${CI_PROJECT_NAME}",status=~"5.."}[5m]) > 0.1
+            for: 2m
+            labels:
+              severity: critical
+            annotations:
+              summary: High error rate detected
+              description: "Error rate is {{ \$value }} errors per second"
+          
+          - alert: HighLatency
+            expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{job="${CI_PROJECT_NAME}"}[5m])) > 0.5
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: High latency detected
+              description: "95th percentile latency is {{ \$value }}s"
+          
+          - alert: PodCrashLooping
+            expr: rate(kube_pod_container_status_restarts_total{pod=~"${CI_PROJECT_NAME}-.*"}[15m]) > 0
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: Pod is crash looping
+              description: "Pod {{ \$labels.pod }} is restarting frequently"
+      EOF
+    - |
+      # Configure Grafana dashboards
+      curl -X POST "${GRAFANA_URL}/api/dashboards/db" \
+        -H "Authorization: Bearer ${GRAFANA_API_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d @monitoring/grafana-dashboard.json
+    - echo "✅ Alerting setup completed"
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# Chaos engineering template
+.chaos_testing:
+  <<: *monitoring_baseline
+  stage: 📊 monitor-slo
+  script:
+    - echo "🌪️ Running chaos engineering tests"
+    - |
+      # Install Chaos Mesh CLI
+      curl -sSL https://mirrors.chaos-mesh.org/chaos-mesh-v2.5.0-linux-amd64.tar.gz | tar -xz
+      mv chaos-mesh-v2.5.0-linux-amd64/chaos-mesh /usr/local/bin/
+    - |
+      # Run pod failure chaos experiment
+      kubectl apply -f - <<EOF
+      apiVersion: chaos-mesh.org/v1alpha1
+      kind: PodChaos
+      metadata:
+        name: ${CI_PROJECT_NAME}-pod-failure
+        namespace: ${NAMESPACE}
+      spec:
+        action: pod-failure
+        mode: one
+        duration: "30s"
+        selector:
+          namespaces:
+            - ${NAMESPACE}
+          labelSelectors:
+            app: ${CI_PROJECT_NAME}
+      EOF
+    - |
+      # Monitor application during chaos
+      sleep 60
+      
+      # Check if application recovered
+      kubectl wait --for=condition=ready pod \
+        -l app=${CI_PROJECT_NAME} \
+        -n ${NAMESPACE} --timeout=300s
+    - |
+      # Cleanup chaos experiment
+      kubectl delete podchaos ${CI_PROJECT_NAME}-pod-failure -n ${NAMESPACE}
+    - echo "✅ Chaos testing completed"
+  when: manual
+  allow_failure: true
+
+# Log aggregation and analysis
+.log_analysis:
+  <<: *monitoring_baseline
+  stage: 📊 monitor-slo
+  script:
+    - echo "📝 Analyzing application logs"
+    - |
+      # Query logs from Loki/Elasticsearch
+      curl -s "${LOKI_URL}/loki/api/v1/query_range" \
+        -G --data-urlencode 'query={app="${CI_PROJECT_NAME}"}' \
+        --data-urlencode 'start='$(date -d '1 hour ago' +%s)000000000 \
+        --data-urlencode 'end='$(date +%s)000000000 | \
+        jq -r '.data.result[].values[][1]' > logs/application.log
+    - |
+      # Analyze log patterns
+      ERROR_COUNT=$(grep -c "ERROR\|FATAL" logs/application.log || true)
+      WARNING_COUNT=$(grep -c "WARN" logs/application.log || true)
+      
+      echo "📊 Log Analysis:"
+      echo "  Errors: ${ERROR_COUNT}"
+      echo "  Warnings: ${WARNING_COUNT}"
+      
+      if [ "$ERROR_COUNT" -gt 10 ]; then
+        echo "❌ High error count in logs"
+        exit 1
+      fi
+    - echo "✅ Log analysis completed"
+  artifacts:
+    when: always
+    paths:
+      - logs/
+    expire_in: 3 days

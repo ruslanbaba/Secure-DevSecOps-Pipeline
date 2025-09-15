@@ -1,0 +1,259 @@
+# ==============================================================================
+# DEPLOYMENT TEMPLATES - Progressive Deployment Strategies
+# ==============================================================================
+
+.deployment_baseline: &deployment_baseline
+  before_script:
+    - echo "🚀 Initializing deployment baseline..."
+    - |
+      # Install kubectl
+      curl -LO "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+      chmod +x kubectl && mv kubectl /usr/local/bin/
+      
+      # Install helm
+      curl -LO "https://get.helm.sh/helm-v${HELM_VERSION}-linux-amd64.tar.gz"
+      tar -xzf helm-v${HELM_VERSION}-linux-amd64.tar.gz
+      mv linux-amd64/helm /usr/local/bin/
+      
+      # Install kustomize
+      curl -LO "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
+      tar -xzf kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz
+      mv kustomize /usr/local/bin/
+    - |
+      # Setup kubeconfig
+      echo "$KUBE_CONFIG" | base64 -d > ~/.kube/config
+      kubectl version --client
+    - echo "✅ Deployment tools ready"
+
+.deployment_rules: &deployment_rules
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+      allow_failure: false
+    - if: $CI_COMMIT_TAG
+      when: on_success
+
+# Blue-Green deployment template
+.blue_green_deployment:
+  <<: *deployment_baseline
+  script:
+    - echo "🔵 Starting Blue-Green deployment"
+    - |
+      # Determine current and new colors
+      CURRENT_COLOR=$(kubectl get service ${CI_PROJECT_NAME} -n ${NAMESPACE} \
+        -o jsonpath='{.spec.selector.color}' 2>/dev/null || echo "blue")
+      
+      if [ "$CURRENT_COLOR" = "blue" ]; then
+        NEW_COLOR="green"
+      else
+        NEW_COLOR="blue"
+      fi
+      
+      echo "Current: ${CURRENT_COLOR}, Deploying: ${NEW_COLOR}"
+    - |
+      # Deploy new version
+      kustomize edit set image ${IMAGE_NAME}:${BUILD_TAG}
+      kustomize build k8s/overlays/${CI_ENVIRONMENT_NAME} | \
+        sed "s/color: .*/color: ${NEW_COLOR}/" | \
+        kubectl apply -f -
+    - |
+      # Wait for rollout
+      kubectl rollout status deployment/${CI_PROJECT_NAME}-${NEW_COLOR} \
+        -n ${NAMESPACE} --timeout=300s
+    - |
+      # Health check
+      kubectl wait --for=condition=ready pod \
+        -l app=${CI_PROJECT_NAME},color=${NEW_COLOR} \
+        -n ${NAMESPACE} --timeout=300s
+    - |
+      # Switch traffic
+      kubectl patch service ${CI_PROJECT_NAME} -n ${NAMESPACE} \
+        -p '{"spec":{"selector":{"color":"'${NEW_COLOR}'"}}}'
+    - |
+      # Cleanup old deployment
+      sleep 30
+      kubectl delete deployment ${CI_PROJECT_NAME}-${CURRENT_COLOR} \
+        -n ${NAMESPACE} --ignore-not-found=true
+    - echo "✅ Blue-Green deployment completed"
+  environment:
+    name: ${CI_ENVIRONMENT_NAME}
+    url: https://${CI_PROJECT_NAME}-${CI_ENVIRONMENT_SLUG}.k8s.local
+    deployment_tier: ${CI_ENVIRONMENT_TIER}
+
+# Canary deployment template
+.canary_deployment:
+  <<: *deployment_baseline
+  script:
+    - echo "🕯️ Starting Canary deployment"
+    - |
+      # Deploy canary version
+      kustomize edit set image ${IMAGE_NAME}:${BUILD_TAG}
+      kustomize build k8s/overlays/${CI_ENVIRONMENT_NAME} | \
+        sed "s/replicas: .*/replicas: 1/" | \
+        sed "s/name: ${CI_PROJECT_NAME}/name: ${CI_PROJECT_NAME}-canary/" | \
+        kubectl apply -f -
+    - |
+      # Wait for canary rollout
+      kubectl rollout status deployment/${CI_PROJECT_NAME}-canary \
+        -n ${NAMESPACE} --timeout=300s
+    - |
+      # Configure traffic split (10% to canary)
+      kubectl apply -f - <<EOF
+      apiVersion: networking.istio.io/v1beta1
+      kind: VirtualService
+      metadata:
+        name: ${CI_PROJECT_NAME}
+        namespace: ${NAMESPACE}
+      spec:
+        http:
+        - match:
+          - headers:
+              canary:
+                exact: "true"
+          route:
+          - destination:
+              host: ${CI_PROJECT_NAME}-canary
+        - route:
+          - destination:
+              host: ${CI_PROJECT_NAME}
+            weight: 90
+          - destination:
+              host: ${CI_PROJECT_NAME}-canary
+            weight: 10
+      EOF
+    - |
+      # Monitor canary metrics
+      echo "📊 Monitoring canary deployment for 5 minutes..."
+      sleep 300
+      
+      # Check error rate
+      ERROR_RATE=$(curl -s "http://prometheus:9090/api/v1/query?query=rate(http_requests_total{job=\"${CI_PROJECT_NAME}-canary\",status=~\"5..\"}[5m])" | \
+        jq -r '.data.result[0].value[1] // "0"')
+      
+      if (( $(echo "$ERROR_RATE > 0.01" | bc -l) )); then
+        echo "❌ Canary error rate too high: ${ERROR_RATE}"
+        exit 1
+      fi
+    - echo "✅ Canary deployment successful"
+  environment:
+    name: ${CI_ENVIRONMENT_NAME}
+    url: https://${CI_PROJECT_NAME}-${CI_ENVIRONMENT_SLUG}.k8s.local
+    deployment_tier: ${CI_ENVIRONMENT_TIER}
+
+# Rolling deployment template
+.rolling_deployment:
+  <<: *deployment_baseline
+  script:
+    - echo "🔄 Starting Rolling deployment"
+    - |
+      # Update image in kustomization
+      cd k8s/overlays/${CI_ENVIRONMENT_NAME}
+      kustomize edit set image ${IMAGE_NAME}:${BUILD_TAG}
+    - |
+      # Apply manifests with rolling update
+      kustomize build . | kubectl apply -f -
+    - |
+      # Wait for rollout
+      kubectl rollout status deployment/${CI_PROJECT_NAME} \
+        -n ${NAMESPACE} --timeout=600s
+    - |
+      # Verify deployment
+      kubectl get pods -l app=${CI_PROJECT_NAME} -n ${NAMESPACE}
+      kubectl describe deployment ${CI_PROJECT_NAME} -n ${NAMESPACE}
+    - echo "✅ Rolling deployment completed"
+  environment:
+    name: ${CI_ENVIRONMENT_NAME}
+    url: https://${CI_PROJECT_NAME}-${CI_ENVIRONMENT_SLUG}.k8s.local
+    deployment_tier: ${CI_ENVIRONMENT_TIER}
+
+# Helm deployment template
+.helm_deployment:
+  <<: *deployment_baseline
+  script:
+    - echo "⛑️ Deploying with Helm"
+    - |
+      # Add required helm repositories
+      helm repo add bitnami https://charts.bitnami.com/bitnami
+      helm repo update
+    - |
+      # Deploy/upgrade with Helm
+      helm upgrade --install ${CI_PROJECT_NAME} ./helm/${CI_PROJECT_NAME} \
+        --namespace ${NAMESPACE} \
+        --create-namespace \
+        --set image.repository=${IMAGE_NAME} \
+        --set image.tag=${BUILD_TAG} \
+        --set environment=${CI_ENVIRONMENT_NAME} \
+        --set ingress.hosts[0].host=${CI_PROJECT_NAME}-${CI_ENVIRONMENT_SLUG}.k8s.local \
+        --wait \
+        --timeout=10m
+    - |
+      # Verify deployment
+      helm status ${CI_PROJECT_NAME} -n ${NAMESPACE}
+      helm test ${CI_PROJECT_NAME} -n ${NAMESPACE}
+    - echo "✅ Helm deployment completed"
+  environment:
+    name: ${CI_ENVIRONMENT_NAME}
+    url: https://${CI_PROJECT_NAME}-${CI_ENVIRONMENT_SLUG}.k8s.local
+    deployment_tier: ${CI_ENVIRONMENT_TIER}
+
+# Rollback template
+.rollback_deployment:
+  <<: *deployment_baseline
+  script:
+    - echo "⏪ Rolling back deployment"
+    - |
+      # Get previous revision
+      PREVIOUS_REVISION=$(kubectl rollout history deployment/${CI_PROJECT_NAME} \
+        -n ${NAMESPACE} --revision=0 | tail -n 2 | head -n 1 | awk '{print $1}')
+      
+      echo "Rolling back to revision: ${PREVIOUS_REVISION}"
+    - |
+      # Perform rollback
+      kubectl rollout undo deployment/${CI_PROJECT_NAME} \
+        -n ${NAMESPACE} --to-revision=${PREVIOUS_REVISION}
+    - |
+      # Wait for rollback
+      kubectl rollout status deployment/${CI_PROJECT_NAME} \
+        -n ${NAMESPACE} --timeout=300s
+    - |
+      # Verify rollback
+      kubectl get pods -l app=${CI_PROJECT_NAME} -n ${NAMESPACE}
+    - echo "✅ Rollback completed"
+  when: manual
+  allow_failure: false
+
+# Database migration template
+.database_migration:
+  image: migrate/migrate:latest
+  script:
+    - echo "🗃️ Running database migrations"
+    - |
+      # Run migrations
+      migrate -path ./migrations \
+        -database "${DATABASE_URL}" \
+        up
+    - echo "✅ Database migrations completed"
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - migrations/*
+    - when: manual
+
+# Feature flag deployment
+.feature_flag_deployment:
+  script:
+    - echo "🏁 Managing feature flags"
+    - |
+      # Update feature flags via API
+      curl -X POST "${FEATURE_FLAG_API}/flags" \
+        -H "Authorization: Bearer ${FEATURE_FLAG_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d '{
+          "flag": "'${CI_PROJECT_NAME}'-'${CI_ENVIRONMENT_NAME}'",
+          "enabled": true,
+          "rollout": '${FEATURE_ROLLOUT_PERCENTAGE:-100}'
+        }'
+    - echo "✅ Feature flags updated"
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - when: manual

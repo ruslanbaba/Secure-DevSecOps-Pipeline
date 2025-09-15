@@ -1,0 +1,212 @@
+# ==============================================================================
+# SECURITY TEMPLATES - Reusable Security Jobs
+# ==============================================================================
+
+.security_baseline: &security_baseline
+  before_script:
+    - echo "🔒 Initializing security baseline..."
+    - |
+      # Verify required security tools and configurations
+      command -v curl >/dev/null 2>&1 || { echo "❌ curl is required"; exit 1; }
+      command -v jq >/dev/null 2>&1 || { echo "❌ jq is required"; exit 1; }
+    - |
+      # Security context validation
+      if [ -z "${SNYK_TOKEN}" ]; then
+        echo "❌ SNYK_TOKEN not configured"
+        exit 1
+      fi
+    - echo "✅ Security baseline validated"
+
+.security_rules: &security_rules
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+.security_artifacts: &security_artifacts
+  artifacts:
+    when: always
+    paths:
+      - security-reports/
+      - compliance-reports/
+    expire_in: 30 days
+    reports:
+      junit: security-reports/security-junit.xml
+
+# Security gate validation
+.security_gate_validation:
+  script:
+    - echo "🔐 Validating security gates"
+    - |
+      # Aggregate security findings
+      CRITICAL_COUNT=0
+      HIGH_COUNT=0
+      MEDIUM_COUNT=0
+      
+      # Process all security reports
+      for report in security-reports/*.json; do
+        if [ -f "$report" ]; then
+          case $(basename "$report") in
+            *checkmarx*)
+              CRITICAL_COUNT=$((CRITICAL_COUNT + $(jq '[.[] | select(.severity == "Critical")] | length' "$report" 2>/dev/null || echo 0)))
+              HIGH_COUNT=$((HIGH_COUNT + $(jq '[.[] | select(.severity == "High")] | length' "$report" 2>/dev/null || echo 0)))
+              ;;
+            *snyk*)
+              CRITICAL_COUNT=$((CRITICAL_COUNT + $(jq '[.vulnerabilities[] | select(.severity == "critical")] | length' "$report" 2>/dev/null || echo 0)))
+              HIGH_COUNT=$((HIGH_COUNT + $(jq '[.vulnerabilities[] | select(.severity == "high")] | length' "$report" 2>/dev/null || echo 0)))
+              ;;
+            *trivy*)
+              CRITICAL_COUNT=$((CRITICAL_COUNT + $(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length' "$report" 2>/dev/null || echo 0)))
+              HIGH_COUNT=$((HIGH_COUNT + $(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH")] | length' "$report" 2>/dev/null || echo 0)))
+              ;;
+          esac
+        fi
+      done
+      
+      echo "📊 Security Summary:"
+      echo "  Critical: ${CRITICAL_COUNT}"
+      echo "  High: ${HIGH_COUNT}"
+      echo "  Medium: ${MEDIUM_COUNT}"
+      
+      # Apply security gates
+      if [ "${CRITICAL_COUNT}" -gt "${SECURITY_GATE_CRITICAL}" ]; then
+        echo "❌ Critical vulnerabilities exceed threshold (${CRITICAL_COUNT} > ${SECURITY_GATE_CRITICAL})"
+        exit 1
+      fi
+      
+      if [ "${HIGH_COUNT}" -gt "${SECURITY_GATE_HIGH}" ]; then
+        echo "❌ High vulnerabilities exceed threshold (${HIGH_COUNT} > ${SECURITY_GATE_HIGH})"
+        exit 1
+      fi
+      
+      echo "✅ Security gates passed"
+
+# DAST template
+.dast_template:
+  stage: 🔐 security-gate
+  image: owasp/zap2docker-stable:latest
+  script:
+    - echo "🕷️ Running DAST scan"
+    - |
+      # Start application for testing
+      docker run -d --name test-app -p 3000:3000 ${IMAGE_NAME}:${BUILD_TAG}
+      sleep 30
+      
+      # Run ZAP baseline scan
+      zap-baseline.py \
+        -t http://test-app:3000 \
+        -J security-reports/zap-baseline.json \
+        -r security-reports/zap-baseline.html \
+        -x security-reports/zap-baseline.xml \
+        -I \
+        -z "-config scanner.strength=HIGH"
+      
+      # Cleanup
+      docker stop test-app
+      docker rm test-app
+  artifacts:
+    when: always
+    paths:
+      - security-reports/
+    expire_in: 30 days
+  allow_failure: true
+
+# License compliance template
+.license_compliance:
+  stage: 🛡️ security-parallel
+  image: licensefinder/license_finder:latest
+  script:
+    - echo "📄 Running license compliance scan"
+    - license_finder --format json > security-reports/license-compliance.json
+    - license_finder --format html > security-reports/license-compliance.html
+    - |
+      # Check for forbidden licenses
+      FORBIDDEN_LICENSES="GPL-3.0,AGPL-3.0,LGPL-3.0"
+      if license_finder --format csv | grep -E "${FORBIDDEN_LICENSES}"; then
+        echo "❌ Forbidden licenses detected"
+        exit 1
+      fi
+    - echo "✅ License compliance check passed"
+  artifacts:
+    paths:
+      - security-reports/
+    expire_in: 30 days
+  allow_failure: true
+
+# Container image signing template
+.image_signing:
+  stage: 📦 package-sign
+  image: gcr.io/projectsigstore/cosign:v${COSIGN_VERSION}
+  needs:
+    - job: build-manifest
+  script:
+    - echo "🔐 Signing container images"
+    - |
+      # Sign the container image
+      cosign sign --yes ${IMAGE_NAME}:${BUILD_TAG}
+      
+      # Generate SBOM
+      cosign attest --yes --type spdxjson \
+        --predicate sbom.spdx.json \
+        ${IMAGE_NAME}:${BUILD_TAG}
+      
+      # Verify signature
+      cosign verify ${IMAGE_NAME}:${BUILD_TAG}
+  artifacts:
+    paths:
+      - sbom.spdx.json
+    expire_in: 30 days
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# Policy as Code validation template
+.policy_validation:
+  stage: 🔐 security-gate
+  image: openpolicyagent/conftest:v${CONFTEST_VERSION}
+  script:
+    - echo "📋 Validating policies with Conftest"
+    - |
+      # Validate Kubernetes manifests
+      conftest verify --policy security/policies/ k8s/
+      
+      # Validate Docker configuration
+      conftest test --policy security/policies/container-security.rego Dockerfile
+      
+      # Validate CI/CD configuration
+      conftest test --policy security/policies/cicd-security.rego .gitlab-ci.yml
+  artifacts:
+    when: always
+    paths:
+      - conftest-results/
+    expire_in: 7 days
+
+# Compliance reporting template
+.compliance_report:
+  stage: 📊 monitor-slo
+  image: alpine:3.18
+  script:
+    - echo "📊 Generating compliance reports"
+    - |
+      # Generate SOC2 compliance report
+      python3 scripts/generate-compliance-report.py \
+        --framework soc2 \
+        --input security-reports/ \
+        --output compliance-reports/soc2-report.json
+      
+      # Generate NIST compliance report  
+      python3 scripts/generate-compliance-report.py \
+        --framework nist \
+        --input security-reports/ \
+        --output compliance-reports/nist-report.json
+      
+      # Generate CIS benchmark report
+      python3 scripts/generate-compliance-report.py \
+        --framework cis \
+        --input security-reports/ \
+        --output compliance-reports/cis-report.json
+  artifacts:
+    paths:
+      - compliance-reports/
+    expire_in: 30 days
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
