@@ -1,0 +1,25 @@
+# Dockerfile for security testing with intentional vulnerabilities
+FROM node:16-alpine
+
+# Intentionally using older Node.js version and vulnerable packages for testing
+WORKDIR /app
+
+# Running as root (security violation)
+USER root
+
+# Copy package files
+COPY package*.json ./
+
+# Install dependencies including vulnerable ones
+RUN npm install --unsafe-perm=true
+
+# Copy source code
+COPY . .
+
+# Expose multiple ports (potential security issue)
+EXPOSE 3000 8080 9000
+
+# Start application as root
+CMD ["npm", "start"]
+
+# Missing security labels and health checks
