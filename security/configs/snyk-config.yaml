@@ -1,0 +1,256 @@
+# Snyk Software Composition Analysis Configuration
+# Enterprise-grade dependency vulnerability scanning
+
+# Project Configuration
+PROJECT_NAME: ${CI_PROJECT_NAME}
+ORGANIZATION: ${SNYK_ORG_ID}
+PROJECT_ENVIRONMENT: ${CI_ENVIRONMENT_SLUG}
+
+# Scan Configuration
+SCAN_ALL_PROJECTS: true
+DETECTION_DEPTH: 5
+SEVERITY_THRESHOLD: "high"
+FAIL_ON: "upgradable"
+TRUST_POLICIES: true
+
+# Scanning Options
+SCAN_OPTIONS:
+  include_dev_dependencies: false
+  include_optional_dependencies: false
+  yarn_workspaces: true
+  all_sub_projects: true
+  exclude_test_dependencies: true
+  skip_unresolved: false
+
+# File Patterns to Scan
+SUPPORTED_MANIFESTS:
+  - package.json
+  - package-lock.json
+  - yarn.lock
+  - pom.xml
+  - build.gradle
+  - requirements.txt
+  - Pipfile
+  - Pipfile.lock
+  - composer.json
+  - composer.lock
+  - Gemfile
+  - Gemfile.lock
+  - go.mod
+  - go.sum
+  - Cargo.toml
+  - Cargo.lock
+
+# Exclude Patterns
+EXCLUDE_PATTERNS:
+  - "*/test/*"
+  - "*/tests/*"
+  - "*/spec/*"
+  - "*/node_modules/*"
+  - "*/vendor/*"
+  - "*/target/*"
+  - "*/build/*"
+  - "*/.git/*"
+  - "*/coverage/*"
+  - "*/reports/*"
+
+# Vulnerability Thresholds
+VULNERABILITY_THRESHOLDS:
+  CRITICAL: 0      # Fail pipeline if any critical vulnerabilities
+  HIGH: 10         # Fail pipeline if more than 10 high vulnerabilities
+  MEDIUM: 25       # Warning if more than 25 medium vulnerabilities
+  LOW: 50          # Info if more than 50 low vulnerabilities
+
+# License Policy
+LICENSE_POLICY:
+  enabled: true
+  severity_threshold: "high"
+  allowed_licenses:
+    - "MIT"
+    - "Apache-2.0"
+    - "BSD-2-Clause"
+    - "BSD-3-Clause"
+    - "ISC"
+    - "CC0-1.0"
+    - "Unlicense"
+  
+  disallowed_licenses:
+    - "GPL-3.0"
+    - "AGPL-3.0"
+    - "LGPL-3.0"
+    - "GPL-2.0"
+    - "LGPL-2.1"
+  
+  copyleft_licenses:
+    - "GPL-3.0"
+    - "AGPL-3.0"
+    - "LGPL-3.0"
+
+# Monitoring Configuration
+MONITORING:
+  enabled: true
+  frequency: "daily"
+  new_vulnerabilities_only: false
+  include_dev_dependencies: false
+
+# Integration Settings
+INTEGRATION:
+  jira:
+    enabled: false
+  slack:
+    enabled: true
+    webhook_url: ${SLACK_WEBHOOK_URL}
+  email:
+    enabled: true
+    recipients:
+      - "security-team@company.com"
+      - "devsecops@company.com"
+
+# Report Configuration
+REPORT_FORMATS:
+  - json
+  - sarif
+  - html
+  - csv
+
+# Custom Vulnerability Database
+CUSTOM_VUL_DB:
+  enabled: false
+  url: ""
+  update_frequency: "daily"
+
+# Advisory Ignore Rules
+IGNORE_RULES:
+  temporary_ignores: []
+  permanent_ignores: []
+  reason_required: true
+  expiry_date_required: true
+
+# Language-Specific Configuration
+LANGUAGE_SETTINGS:
+  JavaScript:
+    package_managers:
+      - npm
+      - yarn
+    scan_dev_dependencies: false
+    exclude_yarn_workspaces: false
+  
+  Python:
+    package_managers:
+      - pip
+      - pipenv
+      - poetry
+    scan_requirements_txt: true
+    scan_setup_py: true
+  
+  Java:
+    package_managers:
+      - maven
+      - gradle
+    scan_build_files: true
+    include_provided_scope: false
+  
+  .NET:
+    package_managers:
+      - nuget
+      - paket
+    scan_packages_config: true
+    scan_project_json: true
+  
+  Ruby:
+    package_managers:
+      - bundler
+    scan_gemfile: true
+    scan_gemfile_lock: true
+  
+  Go:
+    package_managers:
+      - gomodules
+      - dep
+      - vndr
+    scan_go_mod: true
+    scan_vendor: false
+  
+  Rust:
+    package_managers:
+      - cargo
+    scan_cargo_toml: true
+    scan_cargo_lock: true
+
+# Container Image Scanning (if applicable)
+CONTAINER_SCANNING:
+  enabled: false  # Use Trivy for container scanning
+  dockerfile_scan: false
+
+# Infrastructure as Code Scanning
+IAC_SCANNING:
+  enabled: true
+  file_types:
+    - "*.tf"
+    - "*.yaml"
+    - "*.yml"
+    - "*.json"
+    - "Dockerfile"
+    - "docker-compose.yml"
+  
+  frameworks:
+    - terraform
+    - kubernetes
+    - cloudformation
+    - arm
+    - docker
+
+# API Configuration
+API_SETTINGS:
+  timeout: 300  # seconds
+  retry_attempts: 3
+  retry_delay: 30  # seconds
+  rate_limit: 100  # requests per minute
+
+# Delta Scanning
+DELTA_SCANNING:
+  enabled: true
+  baseline_branch: ${CI_DEFAULT_BRANCH}
+  compare_with_baseline: true
+
+# Compliance Framework Mapping
+COMPLIANCE_MAPPING:
+  frameworks:
+    - "CWE"
+    - "CVE"
+    - "OWASP"
+    - "NIST"
+    - "SOC2"
+  
+  standards:
+    PCI_DSS:
+      requirements:
+        - "6.5.1"  # Injection flaws
+        - "6.5.7"  # Cross-site scripting
+        - "6.5.10" # Broken authentication
+    
+    SOX:
+      requirements:
+        - "Security Controls"
+        - "Data Integrity"
+        - "Access Controls"
+    
+    HIPAA:
+      requirements:
+        - "164.312(a)(1)"  # Access Control
+        - "164.312(e)(1)"  # Transmission Security
+        - "164.312(c)(1)"  # Integrity
+
+# Performance Configuration
+PERFORMANCE:
+  max_scan_duration: 1800  # 30 minutes
+  parallel_scans: true
+  cache_dependencies: true
+  incremental_scanning: true
+
+# Security Configuration
+SECURITY:
+  encrypt_reports: true
+  secure_api_calls: true
+  validate_certificates: true
+  audit_logging: true

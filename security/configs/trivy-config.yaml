@@ -1,0 +1,384 @@
+# Trivy Container Security Configuration
+# Enterprise-grade container vulnerability scanning
+
+# Scanner Configuration
+SCANNER_NAME: "trivy"
+SCANNER_VERSION: "latest"
+SCAN_TYPE: "image"
+FORMAT: "json"
+
+# Database Configuration
+DB_REPOSITORY: "ghcr.io/aquasecurity/trivy-db"
+JAVA_DB_REPOSITORY: "ghcr.io/aquasecurity/trivy-java-db"
+AUTO_UPDATE: true
+SKIP_DB_UPDATE: false
+SKIP_JAVA_DB_UPDATE: false
+DB_UPDATE_INTERVAL: "12h"
+
+# Scanning Configuration
+SEVERITY_LEVELS:
+  - "UNKNOWN"
+  - "LOW"
+  - "MEDIUM"
+  - "HIGH"
+  - "CRITICAL"
+
+# Pipeline Failure Configuration
+EXIT_CODE: 1
+FAIL_ON_SEVERITIES:
+  - "CRITICAL"
+  - "HIGH"
+
+SEVERITY_THRESHOLDS:
+  CRITICAL: 0      # Fail pipeline if any critical vulnerabilities
+  HIGH: 3          # Fail pipeline if more than 3 high vulnerabilities
+  MEDIUM: 10       # Warning if more than 10 medium vulnerabilities
+  LOW: 20          # Info if more than 20 low vulnerabilities
+
+# Scan Scope Configuration
+VULN_TYPE:
+  - "os"           # Operating system packages
+  - "library"      # Application dependencies
+
+SCANNERS:
+  - "vuln"         # Vulnerability scanning
+  - "secret"       # Secret detection
+  - "config"       # Configuration issue detection
+
+# Ignore Configuration
+IGNORE_UNFIXED: true
+IGNORE_POLICY: ".trivyignore"
+IGNORE_STATUS:
+  - "end_of_life"
+  - "will_not_fix"
+
+# Security Gate Configuration
+SECURITY_GATES:
+  critical_vulnerabilities:
+    enabled: true
+    threshold: 0
+    action: "fail"
+  
+  high_vulnerabilities:
+    enabled: true
+    threshold: 3
+    action: "fail"
+  
+  secrets_detected:
+    enabled: true
+    threshold: 0
+    action: "fail"
+  
+  config_issues:
+    enabled: true
+    threshold: 5
+    action: "warn"
+
+# Cache Configuration
+CACHE_DIR: "/tmp/.trivy-cache"
+CACHE_TTL: "24h"
+CLEAR_CACHE: false
+
+# Timeout Configuration
+TIMEOUT: "10m"
+SLOW_TIMEOUT: "20m"
+
+# Output Configuration
+OUTPUT_FORMAT: "json"
+OUTPUT_TEMPLATE: ""
+QUIET: false
+NO_PROGRESS: true
+
+# File System Scanning (for multi-stage builds)
+FILESYSTEM_SCAN:
+  enabled: false
+  skip_files:
+    - "*.log"
+    - "*.tmp"
+    - "*/tmp/*"
+    - "*/cache/*"
+    - "*/test/*"
+
+# Secret Detection Configuration
+SECRET_CONFIG:
+  enabled: true
+  types:
+    - "aws-access-key-id"
+    - "aws-secret-access-key"
+    - "gcp-service-account"
+    - "github-pat"
+    - "gitlab-pat"
+    - "docker-config"
+    - "jwt"
+    - "private-key"
+    - "api-key"
+    - "database-url"
+    - "slack-webhook-url"
+  
+  exclude_patterns:
+    - "*.test.*"
+    - "*/tests/*"
+    - "*/spec/*"
+    - "*example*"
+    - "*sample*"
+
+# Configuration Issue Detection
+CONFIG_DETECTION:
+  enabled: true
+  types:
+    - "dockerfile"
+    - "kubernetes"
+    - "terraform"
+    - "cloudformation"
+  
+  policies:
+    dockerfile:
+      - "no-root-user"
+      - "no-hardcoded-secrets"
+      - "use-official-images"
+      - "minimize-layers"
+      - "use-health-checks"
+    
+    kubernetes:
+      - "security-context-required"
+      - "resource-limits-required"
+      - "no-privileged-containers"
+      - "read-only-filesystem"
+
+# Compliance Framework Mapping
+COMPLIANCE_FRAMEWORKS:
+  CIS_DOCKER:
+    enabled: true
+    benchmark: "1.2.0"
+    controls:
+      - "4.1"   # Image and Build File
+      - "4.5"   # Container Runtime
+      - "4.6"   # Docker Security Operations
+  
+  NIST:
+    enabled: true
+    framework: "800-53"
+    controls:
+      - "SI-3"  # Malicious Code Protection
+      - "RA-5"  # Vulnerability Scanning
+      - "CM-6"  # Configuration Settings
+  
+  SOC2:
+    enabled: true
+    trust_criteria:
+      - "CC6.1" # Logical and Physical Access Controls
+      - "CC6.7" # System Monitoring
+      - "CC7.1" # System Monitoring
+
+# Vulnerability Database Configuration
+VULN_DATABASES:
+  nvd:
+    enabled: true
+    priority: 1
+  
+  red_hat:
+    enabled: true
+    priority: 2
+  
+  debian:
+    enabled: true
+    priority: 3
+  
+  ubuntu:
+    enabled: true
+    priority: 4
+  
+  alpine:
+    enabled: true
+    priority: 5
+
+# Language-Specific Configuration
+LANGUAGE_DETECTION:
+  java:
+    enabled: true
+    jar_scanning: true
+    class_path_scanning: false
+  
+  python:
+    enabled: true
+    requirements_scanning: true
+    pipfile_scanning: true
+  
+  nodejs:
+    enabled: true
+    package_lock_scanning: true
+    yarn_lock_scanning: true
+  
+  golang:
+    enabled: true
+    go_mod_scanning: true
+    go_sum_scanning: true
+  
+  ruby:
+    enabled: true
+    gemfile_scanning: true
+    gemfile_lock_scanning: true
+  
+  rust:
+    enabled: true
+    cargo_lock_scanning: true
+  
+  dotnet:
+    enabled: true
+    packages_config_scanning: true
+    packages_lock_scanning: true
+
+# Platform-Specific Configuration
+PLATFORM_DETECTION:
+  linux:
+    distributions:
+      - "alpine"
+      - "debian"
+      - "ubuntu"
+      - "centos"
+      - "rhel"
+      - "amazon"
+      - "oracle"
+      - "photon"
+      - "suse"
+  
+  container_runtimes:
+    - "docker"
+    - "containerd"
+    - "cri-o"
+    - "podman"
+
+# License Detection
+LICENSE_DETECTION:
+  enabled: true
+  full_license_scanning: false
+  license_categories:
+    allowed:
+      - "MIT"
+      - "Apache-2.0"
+      - "BSD-2-Clause"
+      - "BSD-3-Clause"
+      - "ISC"
+    
+    forbidden:
+      - "GPL-3.0"
+      - "AGPL-3.0"
+      - "LGPL-3.0"
+    
+    review_required:
+      - "GPL-2.0"
+      - "LGPL-2.1"
+      - "MPL-2.0"
+
+# Report Configuration
+REPORT_FORMATS:
+  json:
+    enabled: true
+    filename: "trivy-report.json"
+  
+  sarif:
+    enabled: true
+    filename: "trivy-sarif.json"
+  
+  table:
+    enabled: false
+    filename: "trivy-table.txt"
+  
+  template:
+    enabled: true
+    filename: "trivy-gitlab.json"
+    template: "contrib/gitlab.tpl"
+
+# Integration Configuration
+INTEGRATIONS:
+  gitlab:
+    enabled: true
+    security_dashboard: true
+    merge_request_widget: true
+  
+  prometheus:
+    enabled: true
+    metrics_endpoint: "/metrics"
+    custom_metrics:
+      - "trivy_vulnerabilities_total"
+      - "trivy_scan_duration_seconds"
+      - "trivy_last_scan_timestamp"
+  
+  slack:
+    enabled: true
+    webhook_url: "${SLACK_WEBHOOK_URL}"
+    notify_on:
+      - "critical_vulnerabilities"
+      - "scan_failures"
+      - "policy_violations"
+
+# Performance Configuration
+PERFORMANCE:
+  parallel_scanning: true
+  max_parallel_scans: 4
+  memory_limit: "2Gi"
+  cpu_limit: "1000m"
+  
+  optimization:
+    skip_duplicate_scans: true
+    incremental_scanning: true
+    layer_caching: true
+
+# Advanced Configuration
+ADVANCED:
+  custom_policies_dir: "./security/policies/trivy"
+  plugin_directory: "/usr/local/trivy/plugins"
+  
+  http_proxy: ""
+  https_proxy: ""
+  no_proxy: "localhost,127.0.0.1"
+  
+  registry_authentication:
+    docker_config: true
+    ecr: true
+    gcr: true
+    acr: true
+  
+  offline_scanning: false
+  air_gapped_environment: false
+
+# Monitoring and Alerting
+MONITORING:
+  enabled: true
+  metrics_collection: true
+  
+  alerts:
+    critical_vulnerabilities:
+      enabled: true
+      threshold: 1
+      channels: ["slack", "email"]
+    
+    scan_failures:
+      enabled: true
+      consecutive_failures: 3
+      channels: ["slack", "email"]
+    
+    database_update_failures:
+      enabled: true
+      channels: ["email"]
+    
+    scan_duration_exceeded:
+      enabled: true
+      threshold: "15m"
+      channels: ["slack"]
+
+# Audit and Compliance
+AUDIT:
+  enabled: true
+  log_level: "info"
+  audit_log_file: "/var/log/trivy/audit.log"
+  
+  compliance_reporting:
+    enabled: true
+    frameworks: ["CIS", "NIST", "SOC2"]
+    output_format: "json"
+    
+  evidence_collection:
+    enabled: true
+    retain_scan_artifacts: true
+    retention_period: "90d"

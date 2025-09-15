@@ -1,0 +1,163 @@
+# Checkmarx SAST Configuration
+# Enterprise-grade static application security testing configuration
+
+# Project Configuration
+PROJECT_NAME: ${CI_PROJECT_NAME}
+TEAM_NAME: "DevSecOps"
+PRESET_NAME: "Checkmarx Default"
+ENGINE_CONFIGURATION: "Default Configuration"
+
+# Scan Configuration
+SCAN_TIMEOUT: 120  # minutes
+INCREMENTAL_SCAN: true
+PRIVATE_SCAN: true
+COMMENT: "Automated SAST scan via DevSecOps pipeline"
+
+# Source Code Configuration
+SOURCE_LOCATION: "."
+EXCLUDE_FOLDERS: |
+  test
+  tests
+  spec
+  node_modules
+  vendor
+  .git
+  .gitlab
+  docs
+  documentation
+  examples
+
+EXCLUDE_FILES: |
+  *.min.js
+  *.test.js
+  *.spec.js
+  *.d.ts
+  *.lock
+  *.log
+
+# Security Gate Configuration
+VULNERABILITY_THRESHOLDS:
+  CRITICAL: 0      # Fail pipeline if any critical vulnerabilities
+  HIGH: 5          # Fail pipeline if more than 5 high vulnerabilities
+  MEDIUM: 20       # Fail pipeline if more than 20 medium vulnerabilities
+  LOW: 50          # Warning if more than 50 low vulnerabilities
+
+# Report Configuration
+REPORT_FORMATS:
+  - JSON
+  - XML
+  - PDF
+  - CSV
+
+# Quality Gate Rules
+QUALITY_GATES:
+  - name: "Critical Vulnerabilities"
+    threshold: 0
+    condition: "fail_on_exceeding"
+    severity: "Critical"
+  
+  - name: "High Vulnerabilities"
+    threshold: 5
+    condition: "fail_on_exceeding"
+    severity: "High"
+  
+  - name: "Security Score"
+    threshold: 7.0
+    condition: "fail_below"
+    metric: "security_score"
+
+# Custom Rules Configuration
+CUSTOM_RULES:
+  enabled: true
+  rule_sets:
+    - "OWASP_Top_10"
+    - "CWE_Top_25"
+    - "SANS_Top_25"
+    - "Custom_Enterprise_Rules"
+
+# Integration Configuration
+WEBHOOK_URL: ${CHECKMARX_WEBHOOK_URL}
+NOTIFICATION_EMAILS:
+  - "security-team@company.com"
+  - "devsecops@company.com"
+
+# Compliance Framework Mapping
+COMPLIANCE_MAPPING:
+  OWASP:
+    - "A1:2017-Injection"
+    - "A2:2017-Broken Authentication"
+    - "A3:2017-Sensitive Data Exposure"
+    - "A4:2017-XML External Entities (XXE)"
+    - "A5:2017-Broken Access Control"
+    - "A6:2017-Security Misconfiguration"
+    - "A7:2017-Cross-Site Scripting (XSS)"
+    - "A8:2017-Insecure Deserialization"
+    - "A9:2017-Using Components with Known Vulnerabilities"
+    - "A10:2017-Insufficient Logging & Monitoring"
+  
+  CWE:
+    - "CWE-79: Cross-site Scripting"
+    - "CWE-89: SQL Injection"
+    - "CWE-20: Improper Input Validation"
+    - "CWE-78: OS Command Injection"
+    - "CWE-22: Path Traversal"
+    - "CWE-434: Unrestricted Upload"
+    - "CWE-352: Cross-Site Request Forgery"
+    - "CWE-601: Open Redirect"
+
+# Language-Specific Configuration
+LANGUAGE_SETTINGS:
+  JavaScript:
+    preset: "High Coverage"
+    exclude_test_files: true
+    framework_detection: true
+  
+  Python:
+    preset: "Python High Coverage"
+    exclude_patterns:
+      - "*/migrations/*"
+      - "*/venv/*"
+      - "*/__pycache__/*"
+  
+  Java:
+    preset: "Java High Coverage"
+    exclude_patterns:
+      - "*/target/*"
+      - "*/build/*"
+      - "*.class"
+  
+  CSharp:
+    preset: "C# High Coverage"
+    exclude_patterns:
+      - "*/bin/*"
+      - "*/obj/*"
+      - "*.dll"
+  
+  Go:
+    preset: "Go High Coverage"
+    exclude_patterns:
+      - "*/vendor/*"
+      - "*.mod"
+
+# Advanced Security Configuration
+ADVANCED_SETTINGS:
+  enable_flow_analysis: true
+  enable_data_flow_analysis: true
+  enable_control_flow_analysis: true
+  max_scan_duration: 7200  # seconds
+  enable_delta_scan: true
+  enable_osa_scan: false  # Use Snyk for SCA instead
+
+# API Configuration
+API_SETTINGS:
+  timeout: 300  # seconds
+  retry_attempts: 3
+  retry_delay: 30  # seconds
+  rate_limit: 10  # requests per minute
+
+# Results Processing
+RESULT_PROCESSING:
+  auto_assign_to_developer: true
+  create_jira_tickets: false  # Handled by GitLab integration
+  send_email_notifications: true
+  update_security_dashboard: true

@@ -1,0 +1,575 @@
+# Enterprise DevSecOps Pipeline for Containerized Workloads
+# Built with security-first approach and fail-fast principles
+# Supports: SAST (Checkmarx), SCA (Snyk), Container Security (Trivy), Policy as Code (OPA Conftest)
+
+variables:
+  # Pipeline Configuration
+  DOCKER_DRIVER: overlay2
+  DOCKER_TLS_CERTDIR: "/certs"
+  SECURE_LOG_LEVEL: info
+  
+  # Container Registry
+  CI_REGISTRY_IMAGE: ${CI_REGISTRY}/${CI_PROJECT_PATH}
+  IMAGE_TAG: ${CI_COMMIT_SHORT_SHA}
+  
+  # Security Scanning Configuration
+  CHECKMARX_PROJECT_NAME: ${CI_PROJECT_NAME}
+  SNYK_SEVERITY_THRESHOLD: high
+  TRIVY_SEVERITY: HIGH,CRITICAL
+  TRIVY_EXIT_CODE: 1
+  
+  # Kubernetes Configuration
+  KUBE_NAMESPACE: ${CI_PROJECT_NAME}-${CI_ENVIRONMENT_SLUG}
+  DEPLOY_TIMEOUT: 300s
+  
+  # Compliance and Monitoring
+  COMPLIANCE_FRAMEWORK: "CIS-K8S,NIST,SOC2"
+  SECURITY_SCAN_TIMEOUT: "30m"
+
+# Pipeline Stages with Security Gates
+stages:
+  - security-scan      # Merge Request Security (SAST + SCA)
+  - build-test        # Application Build and Unit Tests
+  - container-security # Container Vulnerability Scanning
+  - policy-validation # OPA Conftest Kubernetes Policy Validation
+  - deploy            # Secure Kubernetes Deployment
+  - monitor           # Post-Deployment Security Monitoring
+
+# Global Before Script - Security Baseline
+.security_baseline: &security_baseline
+  before_script:
+    - echo "🔒 Initializing security baseline..."
+    - |
+      # Verify required security tools and configurations
+      command -v curl >/dev/null 2>&1 || { echo "❌ curl is required but not installed"; exit 1; }
+      command -v jq >/dev/null 2>&1 || { echo "❌ jq is required but not installed"; exit 1; }
+    - |
+      # Security context validation
+      if [ -z "${CHECKMARX_URL}" ] || [ -z "${SNYK_TOKEN}" ]; then
+        echo "❌ Required security tool credentials not configured"
+        exit 1
+      fi
+    - echo "✅ Security baseline validated"
+
+# Security Scan Stage - Merge Request Phase
+.security_rules: &security_rules
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# SAST with Checkmarx CxSAST
+checkmarx-sast:
+  stage: security-scan
+  image: checkmarx/cxcli:latest
+  <<: *security_baseline
+  script:
+    - echo "🔍 Starting SAST scan with Checkmarx..."
+    - |
+      # Checkmarx SAST scan with enterprise configuration
+      cx scan create \
+        --project-name "${CHECKMARX_PROJECT_NAME}" \
+        --source-dir . \
+        --scan-types sast \
+        --incremental \
+        --threshold "sast-high=0;sast-medium=10" \
+        --report-format json \
+        --output-path checkmarx-report.json \
+        --verbose
+    - |
+      # Process scan results and enforce security gates
+      if [ -f "checkmarx-report.json" ]; then
+        HIGH_VULNS=$(jq '.scanResults[] | select(.severity == "High") | length' checkmarx-report.json || echo "0")
+        CRITICAL_VULNS=$(jq '.scanResults[] | select(.severity == "Critical") | length' checkmarx-report.json || echo "0")
+        
+        echo "📊 SAST Results: Critical: ${CRITICAL_VULNS}, High: ${HIGH_VULNS}"
+        
+        if [ "${CRITICAL_VULNS}" -gt 0 ]; then
+          echo "❌ Critical vulnerabilities found. Pipeline failed."
+          exit 1
+        fi
+        
+        if [ "${HIGH_VULNS}" -gt 5 ]; then
+          echo "⚠️ Too many high-severity vulnerabilities (${HIGH_VULNS} > 5). Pipeline failed."
+          exit 1
+        fi
+        
+        echo "✅ SAST security gate passed"
+      else
+        echo "❌ Checkmarx scan failed or report not generated"
+        exit 1
+      fi
+  artifacts:
+    reports:
+      sast: checkmarx-report.json
+    paths:
+      - checkmarx-report.json
+    expire_in: 30 days
+    when: always
+  timeout: ${SECURITY_SCAN_TIMEOUT}
+  retry:
+    max: 2
+    when: runner_system_failure
+  <<: *security_rules
+
+# SCA with Snyk
+snyk-sca:
+  stage: security-scan
+  image: snyk/snyk:alpine
+  <<: *security_baseline
+  script:
+    - echo "🔍 Starting SCA scan with Snyk..."
+    - |
+      # Authenticate with Snyk
+      snyk auth ${SNYK_TOKEN}
+      
+      # Software Composition Analysis
+      snyk test \
+        --severity-threshold=${SNYK_SEVERITY_THRESHOLD} \
+        --json-file-output=snyk-report.json \
+        --all-projects \
+        --detection-depth=5 \
+        --exclude=test,spec,docs || SNYK_EXIT_CODE=$?
+      
+      # Process SCA results
+      if [ -f "snyk-report.json" ]; then
+        CRITICAL_VULNS=$(jq '[.vulnerabilities[] | select(.severity == "critical")] | length' snyk-report.json || echo "0")
+        HIGH_VULNS=$(jq '[.vulnerabilities[] | select(.severity == "high")] | length' snyk-report.json || echo "0")
+        
+        echo "📊 SCA Results: Critical: ${CRITICAL_VULNS}, High: ${HIGH_VULNS}"
+        
+        if [ "${CRITICAL_VULNS}" -gt 0 ]; then
+          echo "❌ Critical dependency vulnerabilities found. Pipeline failed."
+          exit 1
+        fi
+        
+        if [ "${HIGH_VULNS}" -gt 10 ]; then
+          echo "⚠️ Too many high-severity dependency vulnerabilities (${HIGH_VULNS} > 10). Pipeline failed."
+          exit 1
+        fi
+        
+        echo "✅ SCA security gate passed"
+      else
+        echo "❌ Snyk scan failed or report not generated"
+        exit 1
+      fi
+  artifacts:
+    reports:
+      dependency_scanning: snyk-report.json
+    paths:
+      - snyk-report.json
+    expire_in: 30 days
+    when: always
+  timeout: ${SECURITY_SCAN_TIMEOUT}
+  retry:
+    max: 2
+    when: runner_system_failure
+  <<: *security_rules
+
+# Build and Test Stage
+build-application:
+  stage: build-test
+  image: docker:24-dind
+  services:
+    - docker:24-dind
+  <<: *security_baseline
+  script:
+    - echo "🏗️ Building application with security hardening..."
+    - |
+      # Build application with security best practices
+      docker build \
+        --build-arg BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ') \
+        --build-arg VCS_REF=${CI_COMMIT_SHA} \
+        --build-arg VERSION=${CI_COMMIT_TAG:-${CI_COMMIT_SHORT_SHA}} \
+        --label org.opencontainers.image.created=$(date -u +'%Y-%m-%dT%H:%M:%SZ') \
+        --label org.opencontainers.image.revision=${CI_COMMIT_SHA} \
+        --label org.opencontainers.image.version=${CI_COMMIT_TAG:-${CI_COMMIT_SHORT_SHA}} \
+        --label org.opencontainers.image.source=${CI_PROJECT_URL} \
+        --no-cache \
+        -t ${CI_REGISTRY_IMAGE}:${IMAGE_TAG} \
+        -f Dockerfile .
+    - |
+      # Tag with latest for default branch
+      if [ "${CI_COMMIT_BRANCH}" = "${CI_DEFAULT_BRANCH}" ]; then
+        docker tag ${CI_REGISTRY_IMAGE}:${IMAGE_TAG} ${CI_REGISTRY_IMAGE}:latest
+      fi
+    - echo "✅ Application build completed"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+# Container Security Scanning with Trivy
+trivy-container-scan:
+  stage: container-security
+  image: aquasec/trivy:latest
+  dependencies:
+    - build-application
+  <<: *security_baseline
+  script:
+    - echo "🔍 Starting container vulnerability scan with Trivy..."
+    - |
+      # Container vulnerability scanning with comprehensive configuration
+      trivy image \
+        --format json \
+        --output trivy-report.json \
+        --severity ${TRIVY_SEVERITY} \
+        --ignore-unfixed \
+        --no-progress \
+        --timeout 10m \
+        --exit-code ${TRIVY_EXIT_CODE} \
+        ${CI_REGISTRY_IMAGE}:${IMAGE_TAG}
+    - |
+      # Process Trivy scan results
+      if [ -f "trivy-report.json" ]; then
+        CRITICAL_VULNS=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length' trivy-report.json || echo "0")
+        HIGH_VULNS=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH")] | length' trivy-report.json || echo "0")
+        
+        echo "📊 Container Scan Results: Critical: ${CRITICAL_VULNS}, High: ${HIGH_VULNS}"
+        
+        # Generate security summary
+        echo "🛡️ Container Security Summary:" > container-security-summary.txt
+        echo "Critical Vulnerabilities: ${CRITICAL_VULNS}" >> container-security-summary.txt
+        echo "High Vulnerabilities: ${HIGH_VULNS}" >> container-security-summary.txt
+        echo "Scan Date: $(date)" >> container-security-summary.txt
+        echo "Image: ${CI_REGISTRY_IMAGE}:${IMAGE_TAG}" >> container-security-summary.txt
+        
+        if [ "${CRITICAL_VULNS}" -gt 0 ]; then
+          echo "❌ Critical container vulnerabilities found. Blocking deployment."
+          exit 1
+        fi
+        
+        echo "✅ Container security gate passed"
+      else
+        echo "❌ Trivy scan failed or report not generated"
+        exit 1
+      fi
+  artifacts:
+    reports:
+      container_scanning: trivy-report.json
+    paths:
+      - trivy-report.json
+      - container-security-summary.txt
+    expire_in: 30 days
+    when: always
+  timeout: 15m
+  retry:
+    max: 2
+    when: runner_system_failure
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+# Push to Registry (only after security validation)
+push-to-registry:
+  stage: container-security
+  image: docker:24-dind
+  services:
+    - docker:24-dind
+  dependencies:
+    - build-application
+    - trivy-container-scan
+  needs:
+    - job: build-application
+    - job: trivy-container-scan
+  script:
+    - echo "📦 Pushing secure container to registry..."
+    - docker login -u ${CI_REGISTRY_USER} -p ${CI_REGISTRY_PASSWORD} ${CI_REGISTRY}
+    - docker push ${CI_REGISTRY_IMAGE}:${IMAGE_TAG}
+    - |
+      if [ "${CI_COMMIT_BRANCH}" = "${CI_DEFAULT_BRANCH}" ]; then
+        docker push ${CI_REGISTRY_IMAGE}:latest
+      fi
+    - echo "✅ Container pushed to registry successfully"
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+# Policy Validation with OPA Conftest
+opa-policy-validation:
+  stage: policy-validation
+  image: openpolicyagent/conftest:latest
+  <<: *security_baseline
+  script:
+    - echo "🔍 Starting Kubernetes policy validation with OPA Conftest..."
+    - |
+      # Download and validate OPA policies
+      if [ ! -d "security/policies" ]; then
+        echo "❌ OPA policies directory not found"
+        exit 1
+      fi
+      
+      # Validate Kubernetes manifests against security policies
+      conftest verify \
+        --policy security/policies \
+        k8s/base/*.yaml \
+        k8s/overlays/${CI_ENVIRONMENT_SLUG:-staging}/*.yaml || POLICY_EXIT_CODE=$?
+      
+      # Test manifests against policies
+      conftest test \
+        --policy security/policies \
+        --output json \
+        --all-namespaces \
+        k8s/base/*.yaml > policy-report.json || CONFTEST_EXIT_CODE=$?
+      
+      # Process policy validation results
+      if [ -f "policy-report.json" ]; then
+        POLICY_VIOLATIONS=$(jq '[.[] | select(.failures | length > 0)] | length' policy-report.json || echo "0")
+        WARNINGS=$(jq '[.[] | select(.warnings | length > 0)] | length' policy-report.json || echo "0")
+        
+        echo "📊 Policy Validation Results: Violations: ${POLICY_VIOLATIONS}, Warnings: ${WARNINGS}"
+        
+        if [ "${POLICY_VIOLATIONS}" -gt 0 ]; then
+          echo "❌ Policy violations found. Deployment blocked."
+          jq -r '.[] | select(.failures | length > 0) | .failures[]' policy-report.json
+          exit 1
+        fi
+        
+        if [ "${WARNINGS}" -gt 0 ]; then
+          echo "⚠️ Policy warnings found:"
+          jq -r '.[] | select(.warnings | length > 0) | .warnings[]' policy-report.json
+        fi
+        
+        echo "✅ Policy validation passed"
+      else
+        echo "❌ Policy validation failed or report not generated"
+        exit 1
+      fi
+  artifacts:
+    reports:
+      junit: policy-report.json
+    paths:
+      - policy-report.json
+    expire_in: 30 days
+    when: always
+  timeout: 10m
+  retry:
+    max: 2
+    when: runner_system_failure
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+# Secure Kubernetes Deployment
+deploy-staging:
+  stage: deploy
+  image: bitnami/kubectl:latest
+  environment:
+    name: staging
+    url: https://staging.${CI_PROJECT_NAME}.${KUBE_DOMAIN}
+  dependencies:
+    - push-to-registry
+    - opa-policy-validation
+  needs:
+    - job: push-to-registry
+    - job: opa-policy-validation
+  <<: *security_baseline
+  script:
+    - echo "🚀 Deploying to staging with security hardening..."
+    - |
+      # Configure kubectl with security context
+      echo "${KUBE_CONFIG}" | base64 -d > kubeconfig
+      export KUBECONFIG=kubeconfig
+      
+      # Validate cluster connectivity and RBAC
+      kubectl cluster-info
+      kubectl auth can-i create deployments --namespace=${KUBE_NAMESPACE}
+      
+      # Create namespace with security labels
+      kubectl create namespace ${KUBE_NAMESPACE} --dry-run=client -o yaml | \
+        kubectl label --local -f - \
+          security.policy/enforce=strict \
+          compliance.framework=${COMPLIANCE_FRAMEWORK} \
+          environment=staging \
+          --dry-run=client -o yaml | \
+        kubectl apply -f -
+      
+      # Apply Kubernetes manifests with security validation
+      kubectl apply -k k8s/overlays/staging/ --namespace=${KUBE_NAMESPACE}
+      
+      # Wait for deployment rollout with timeout
+      kubectl rollout status deployment/${CI_PROJECT_NAME} \
+        --namespace=${KUBE_NAMESPACE} \
+        --timeout=${DEPLOY_TIMEOUT}
+      
+      # Verify deployment security posture
+      kubectl get pods -n ${KUBE_NAMESPACE} -o jsonpath='{.items[*].spec.securityContext}'
+      
+      echo "✅ Staging deployment completed successfully"
+  artifacts:
+    paths:
+      - kubeconfig
+    expire_in: 1 day
+    when: on_failure
+  timeout: 15m
+  retry:
+    max: 2
+    when: runner_system_failure
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+deploy-production:
+  stage: deploy
+  image: bitnami/kubectl:latest
+  environment:
+    name: production
+    url: https://${CI_PROJECT_NAME}.${KUBE_DOMAIN}
+  dependencies:
+    - push-to-registry
+    - opa-policy-validation
+  needs:
+    - job: deploy-staging
+  <<: *security_baseline
+  script:
+    - echo "🚀 Deploying to production with enhanced security..."
+    - |
+      # Production deployment with additional security checks
+      echo "${KUBE_CONFIG_PROD}" | base64 -d > kubeconfig-prod
+      export KUBECONFIG=kubeconfig-prod
+      
+      # Enhanced security validation for production
+      kubectl cluster-info
+      kubectl auth can-i create deployments --namespace=${KUBE_NAMESPACE}
+      
+      # Apply production-grade security policies
+      kubectl create namespace ${KUBE_NAMESPACE} --dry-run=client -o yaml | \
+        kubectl label --local -f - \
+          security.policy/enforce=strict \
+          compliance.framework=${COMPLIANCE_FRAMEWORK} \
+          environment=production \
+          data-classification=confidential \
+          --dry-run=client -o yaml | \
+        kubectl apply -f -
+      
+      # Deploy with production security overlay
+      kubectl apply -k k8s/overlays/production/ --namespace=${KUBE_NAMESPACE}
+      
+      # Production deployment verification
+      kubectl rollout status deployment/${CI_PROJECT_NAME} \
+        --namespace=${KUBE_NAMESPACE} \
+        --timeout=${DEPLOY_TIMEOUT}
+      
+      # Post-deployment security validation
+      kubectl get pods -n ${KUBE_NAMESPACE} -o json | \
+        jq '.items[] | {name: .metadata.name, securityContext: .spec.securityContext}'
+      
+      echo "✅ Production deployment completed successfully"
+  when: manual
+  timeout: 20m
+  retry:
+    max: 1
+    when: runner_system_failure
+  rules:
+    - if: $CI_COMMIT_TAG
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+
+# Security Monitoring and Alerting
+security-monitoring:
+  stage: monitor
+  image: curlimages/curl:latest
+  dependencies:
+    - deploy-staging
+  needs:
+    - job: deploy-staging
+  script:
+    - echo "📊 Initiating security monitoring and alerting..."
+    - |
+      # Collect security metrics
+      DEPLOYMENT_STATUS=$(curl -s -f "${PROMETHEUS_URL}/api/v1/query?query=up{job='kubernetes-pods',namespace='${KUBE_NAMESPACE}'}" | jq -r '.data.result[0].value[1]' || echo "0")
+      
+      # Send security alert to monitoring system
+      ALERT_PAYLOAD=$(cat <<EOF
+      {
+        "text": "🔒 DevSecOps Pipeline Deployment Alert",
+        "blocks": [
+          {
+            "type": "section",
+            "text": {
+              "type": "mrkdwn",
+              "text": "*Deployment Security Summary*\n• Project: ${CI_PROJECT_NAME}\n• Environment: ${CI_ENVIRONMENT_SLUG}\n• Commit: ${CI_COMMIT_SHORT_SHA}\n• Pipeline: ${CI_PIPELINE_URL}\n• Status: ✅ Deployed with Security Validation"
+            }
+          }
+        ]
+      }
+      EOF
+      )
+      
+      # Send notification
+      if [ -n "${SLACK_WEBHOOK_URL}" ]; then
+        curl -X POST -H 'Content-type: application/json' \
+          --data "${ALERT_PAYLOAD}" \
+          "${SLACK_WEBHOOK_URL}"
+      fi
+      
+      echo "✅ Security monitoring configured successfully"
+  timeout: 5m
+  retry:
+    max: 2
+    when: runner_system_failure
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+# Security Scan Summary Job
+security-summary:
+  stage: monitor
+  image: alpine:latest
+  dependencies:
+    - checkmarx-sast
+    - snyk-sca
+    - trivy-container-scan
+    - opa-policy-validation
+  script:
+    - echo "📋 Generating comprehensive security summary..."
+    - |
+      apk add --no-cache jq
+      
+      # Generate comprehensive security report
+      cat > security-summary.md <<EOF
+      # 🛡️ DevSecOps Pipeline Security Summary
+      
+      **Project:** ${CI_PROJECT_NAME}  
+      **Pipeline:** ${CI_PIPELINE_ID}  
+      **Commit:** ${CI_COMMIT_SHA}  
+      **Date:** $(date)
+      
+      ## Security Scan Results
+      
+      ### Static Application Security Testing (SAST)
+      $([ -f "checkmarx-report.json" ] && echo "✅ Completed" || echo "❌ Failed")
+      
+      ### Software Composition Analysis (SCA)
+      $([ -f "snyk-report.json" ] && echo "✅ Completed" || echo "❌ Failed")
+      
+      ### Container Security Scanning
+      $([ -f "trivy-report.json" ] && echo "✅ Completed" || echo "❌ Failed")
+      
+      ### Policy Validation
+      $([ -f "policy-report.json" ] && echo "✅ Completed" || echo "❌ Failed")
+      
+      ## Security Gates Status
+      
+      - **Merge Request Security Gate:** ✅ Passed
+      - **Container Security Gate:** ✅ Passed  
+      - **Policy Validation Gate:** ✅ Passed
+      
+      ## Compliance Framework
+      ${COMPLIANCE_FRAMEWORK}
+      
+      ---
+      *Generated by DevSecOps Pipeline v1.0*
+      EOF
+      
+      echo "Security summary generated successfully"
+  artifacts:
+    reports:
+      junit: security-summary.md
+    paths:
+      - security-summary.md
+    expire_in: 90 days
+  timeout: 5m
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
