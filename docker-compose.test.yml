@@ -1,0 +1,151 @@
+version: '3.8'
+
+services:
+  # Test Database
+  test-db:
+    image: postgres:15-alpine
+    container_name: test-postgres
+    environment:
+      POSTGRES_DB: test_devsecops
+      POSTGRES_USER: test_user
+      POSTGRES_PASSWORD: test_password
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "5433:5432"
+    volumes:
+      - test_db_data:/var/lib/postgresql/data
+      - ./tests/fixtures/db:/docker-entrypoint-initdb.d
+    networks:
+      - test-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U test_user -d test_devsecops"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Test Redis
+  test-redis:
+    image: redis:7-alpine
+    container_name: test-redis
+    ports:
+      - "6380:6379"
+    networks:
+      - test-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Test Application
+  test-app:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    container_name: test-app
+    environment:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://test_user:test_password@test-db:5432/test_devsecops
+      REDIS_URL: redis://test-redis:6379
+      PORT: 3000
+    ports:
+      - "3001:3000"
+    depends_on:
+      test-db:
+        condition: service_healthy
+      test-redis:
+        condition: service_healthy
+    networks:
+      - test-network
+    volumes:
+      - ./tests:/app/tests
+      - test_uploads:/app/uploads
+    command: ["npm", "start"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Test Tools Container
+  test-tools:
+    image: node:18-alpine
+    container_name: test-tools
+    working_dir: /app
+    environment:
+      NODE_ENV: test
+      APP_URL: http://test-app:3000
+    volumes:
+      - .:/app
+      - test_node_modules:/app/node_modules
+    networks:
+      - test-network
+    depends_on:
+      test-app:
+        condition: service_healthy
+    command: ["tail", "-f", "/dev/null"]
+
+  # Mock External Services
+  mock-services:
+    image: mockserver/mockserver:mockserver-5.15.0
+    container_name: mock-services
+    ports:
+      - "1080:1080"
+    environment:
+      MOCKSERVER_PROPERTY_FILE: /config/mockserver.properties
+      MOCKSERVER_INITIALIZATION_JSON_PATH: /config/expectations.json
+    volumes:
+      - ./tests/mocks:/config
+    networks:
+      - test-network
+
+  # Security Scanning Tools
+  security-scanner:
+    image: aquasec/trivy:latest
+    container_name: security-scanner
+    volumes:
+      - .:/workspace
+      - trivy_cache:/root/.cache/trivy
+    networks:
+      - test-network
+    command: ["tail", "-f", "/dev/null"]
+
+  # Performance Testing
+  k6-runner:
+    image: grafana/k6:latest
+    container_name: k6-runner
+    volumes:
+      - ./tests/performance/k6:/scripts
+    networks:
+      - test-network
+    command: ["tail", "-f", "/dev/null"]
+
+  # Test Results Collector
+  test-collector:
+    image: alpine:latest
+    container_name: test-collector
+    volumes:
+      - ./tests/test-results:/results
+      - test_reports:/reports
+    networks:
+      - test-network
+    command: ["tail", "-f", "/dev/null"]
+
+networks:
+  test-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  test_db_data:
+    driver: local
+  test_node_modules:
+    driver: local
+  test_uploads:
+    driver: local
+  test_reports:
+    driver: local
+  trivy_cache:
+    driver: local
